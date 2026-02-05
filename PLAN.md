@@ -343,216 +343,272 @@ Traditional probabilistic models collapse uncertainty into point estimates. In p
 
 is critical. **Subjective logic** explicitly represents this uncertainty.
 
-### The Power of Disbelief: Surfacing Negative Knowledge
+### The Power of Disbelief: Raw Belief Exposure
 
 A key insight from Test-time Recursive Thinking ([arXiv:2602.03094](https://arxiv.org/abs/2602.03094)) is that **negative constraints ("don't do X") are more valuable than positive guidance ("do Y")**. This maps directly to subjective logic's disbelief component.
 
-The key is not to mathematically weight disbelief higher, but to **surface strong disbeliefs prominently** in the belief state so the LLM can reason about them explicitly.
+Rather than converting beliefs to natural language (losing information), we **expose the raw (b, d, u) tuples** directly to the agent and let it reason about them.
 
-#### Why Negative Knowledge is More Actionable
+#### Why Raw Tuples > Natural Language
 
-| Positive Knowledge (Belief) | Negative Knowledge (Disbelief) | Why Disbelief is Clearer |
-|----------------------------|-------------------------------|--------------------------|
-| "Villain sometimes bluffs rivers" | "Villain NEVER bluffs rivers" | Eliminates a possibility entirely |
-| "Villain might fold to 3-bets" | "Villain NEVER folds to 3-bets" | Removes fold equity from calculation |
-| "Villain could slowplay" | "Villain DOESN'T slowplay" | Trust their checks as weakness |
-| "Villain may be aggressive" | "Villain is NOT aggressive" | Expect passive play |
+| Approach | Example | Problem |
+|----------|---------|---------|
+| Natural language | "Villain doesn't bluff rivers" | Sounds dogmatic, hides uncertainty |
+| Projected probability | "15% chance villain bluffs" | Collapses (b=0.08, d=0.72, u=0.20) into single number |
+| **Raw tuple** | **(b=0.08, d=0.72, u=0.20)** | Agent sees full picture, reasons appropriately |
 
-**Positive knowledge** suggests probabilistic adjustments.
-**Negative knowledge** eliminates possibilities — making decisions simpler.
+The agent can see:
+- **High disbelief (d=0.72)** → Strong evidence AGAINST bluffing
+- **Low uncertainty (u=0.20)** → This is reliable information
+- **Low belief (b=0.08)** → Very little evidence FOR bluffing
 
-#### Surfacing High-Disbelief Opinions
+#### Sorting by Knowledge (b + d)
 
-Strong disbeliefs should be **explicitly surfaced** in the prompt as "DON'T" rules:
+Beliefs are sorted **descending by knowledge**, where knowledge = b + d = 1 - u.
+
+Higher knowledge means more evidence (either for or against), thus more useful for decision-making.
 
 ```python
 @dataclass
 class Opinion:
+    """Subjective logic opinion exposing raw (b, d, u, a) to agent."""
     belief: float
     disbelief: float
     uncertainty: float
     base_rate: float
 
-    def has_strong_disbelief(self, threshold: float = 0.6) -> bool:
-        """Is disbelief strong enough to surface as a negative constraint?"""
-        return self.disbelief >= threshold and self.uncertainty < 0.4
+    @property
+    def knowledge(self) -> float:
+        """Total evidence accumulated (b + d). Higher = more informative."""
+        return self.belief + self.disbelief
 
-    def to_natural_language(self, proposition: str) -> str:
-        """
-        Convert opinion to natural language, highlighting disbelief.
-
-        Strong disbelief is surfaced as "DOES NOT" / "NEVER" statements.
-        """
-        if self.has_strong_disbelief():
-            # Surface as explicit negative constraint
-            confidence = 1 - self.uncertainty
-            return f"⛔ STRONG NEGATIVE: Villain DOES NOT {proposition} " \
-                   f"(d={self.disbelief:.0%}, confidence={confidence:.0%})"
-
-        elif self.belief > self.disbelief:
-            return f"Villain tends to {proposition} " \
-                   f"(b={self.belief:.0%}, u={self.uncertainty:.0%})"
-
-        else:
-            return f"Uncertain whether villain {proposition} " \
-                   f"(b={self.belief:.0%}, d={self.disbelief:.0%}, u={self.uncertainty:.0%})"
+    def to_tuple_str(self) -> str:
+        """Raw tuple format for agent consumption."""
+        return f"(b={self.belief:.2f}, d={self.disbelief:.2f}, u={self.uncertainty:.2f})"
 
 
-class BeliefStateSummarizer:
+@dataclass
+class LabeledBelief:
+    """A belief with its label, for sorting and presentation."""
+    label: str           # e.g., "folds_to_cbet"
+    opinion: Opinion
+    samples: int         # Number of observations
+
+    @property
+    def knowledge(self) -> float:
+        return self.opinion.knowledge
+
+
+class BeliefStatePresenter:
     """
-    Summarize beliefs for LLM prompt, surfacing negative knowledge prominently.
+    Present beliefs to agent as raw (b, d, u) tuples.
 
-    Key insight from TRT: "Don't do" rules should be presented FIRST
-    and CLEARLY so the LLM treats them as constraints.
+    Key principles:
+    1. Expose raw tuples, don't convert to natural language
+    2. Sort by knowledge (b+d) descending - most informative first
+    3. Let agent reason about disbelief's value for narrowing search
     """
 
-    def summarize_for_prompt(self, beliefs: VillainBeliefs) -> str:
+    def format_for_prompt(self, beliefs: VillainBeliefs) -> str:
         """
-        Generate belief summary with negative constraints surfaced first.
+        Format beliefs for LLM prompt with raw tuples.
+
+        Sorted by knowledge (b+d) descending.
         """
-        lines = []
+        # Collect all beliefs with labels
+        labeled = [
+            LabeledBelief("folds_to_cbet", beliefs.ω_folds_to_cbet,
+                         beliefs.samples_cbet),
+            LabeledBelief("folds_to_3bet", beliefs.ω_folds_to_3bet,
+                         beliefs.samples_3bet),
+            LabeledBelief("bluffs_river", beliefs.ω_bluffs_river,
+                         beliefs.samples_river),
+            LabeledBelief("slowplays_monsters", beliefs.ω_slowplays_monsters,
+                         beliefs.samples_slowplay),
+            LabeledBelief("is_aggressive", beliefs.ω_is_aggressive,
+                         beliefs.samples_aggression),
+            # ... other beliefs
+        ]
 
-        # SECTION 1: Strong Negative Constraints (High Disbelief)
-        # These are presented first and prominently
-        negatives = self._extract_strong_negatives(beliefs)
-        if negatives:
-            lines.append("=== NEGATIVE CONSTRAINTS (High Confidence) ===")
-            lines.append("These are things villain DOES NOT do:")
-            for neg in negatives:
-                lines.append(f"  ⛔ {neg}")
-            lines.append("")
+        # Sort by knowledge (b+d) descending
+        labeled.sort(key=lambda x: x.knowledge, reverse=True)
 
-        # SECTION 2: Positive Tendencies (High Belief)
-        positives = self._extract_strong_positives(beliefs)
-        if positives:
-            lines.append("=== POSITIVE TENDENCIES ===")
-            lines.append("Things villain tends to do:")
-            for pos in positives:
-                lines.append(f"  ✓ {pos}")
-            lines.append("")
+        lines = [
+            f"Villain: {beliefs.villain_id} ({beliefs.hands_observed} hands)",
+            "",
+            "Beliefs (sorted by knowledge, highest first):",
+            "  Format: label: (b=belief, d=disbelief, u=uncertainty) [n samples]",
+            ""
+        ]
 
-        # SECTION 3: Uncertain / Insufficient Data
-        uncertain = self._extract_uncertain(beliefs)
-        if uncertain:
-            lines.append("=== UNCERTAIN (Insufficient Data) ===")
-            for unc in uncertain:
-                lines.append(f"  ? {unc}")
+        for lb in labeled:
+            o = lb.opinion
+            lines.append(
+                f"  {lb.label}: (b={o.belief:.2f}, d={o.disbelief:.2f}, "
+                f"u={o.uncertainty:.2f}) [{lb.samples} samples]"
+            )
 
         return "\n".join(lines)
-
-    def _extract_strong_negatives(self, beliefs: VillainBeliefs) -> list[str]:
-        """Extract high-disbelief opinions as negative statements."""
-        negatives = []
-
-        if beliefs.ω_folds_to_cbet.has_strong_disbelief():
-            negatives.append("Does NOT fold to c-bets → don't bluff c-bet")
-
-        if beliefs.ω_folds_to_3bet.has_strong_disbelief():
-            negatives.append("Does NOT fold to 3-bets → only 3-bet for value")
-
-        if beliefs.ω_bluffs_river.has_strong_disbelief():
-            negatives.append("Does NOT bluff rivers → call with any showdown value")
-
-        if beliefs.ω_slowplays_monsters.has_strong_disbelief():
-            negatives.append("Does NOT slowplay big hands → trust their checks")
-
-        if beliefs.ω_folds_to_river_bet.has_strong_disbelief():
-            negatives.append("Does NOT fold rivers → never bluff river")
-
-        return negatives
 ```
 
-#### Example Prompt with Surfaced Disbeliefs
+#### Example: Raw Belief Presentation
 
 ```
-=== VILLAIN BELIEFS: player_42 (150 hands) ===
+Villain: player_42 (150 hands)
 
-=== NEGATIVE CONSTRAINTS (High Confidence) ===
-These are things villain DOES NOT do:
-  ⛔ Does NOT fold to c-bets → don't bluff c-bet
-  ⛔ Does NOT bluff rivers → call with any showdown value
+Beliefs (sorted by knowledge, highest first):
+  Format: label: (b=belief, d=disbelief, u=uncertainty) [n samples]
 
-=== POSITIVE TENDENCIES ===
-Things villain tends to do:
-  ✓ Tends to call too much preflop (VPIP 45%)
-  ✓ Tends to be passive postflop (AF 0.8)
-
-=== UNCERTAIN (Insufficient Data) ===
-  ? Fold to turn barrels: insufficient data (12 samples)
-  ? Check-raise frequency: insufficient data (5 samples)
+  folds_to_cbet:      (b=0.12, d=0.68, u=0.20) [45 samples]
+  bluffs_river:       (b=0.08, d=0.72, u=0.20) [25 samples]
+  is_aggressive:      (b=0.65, d=0.15, u=0.20) [150 samples]
+  folds_to_3bet:      (b=0.25, d=0.35, u=0.40) [12 samples]
+  slowplays_monsters: (b=0.10, d=0.30, u=0.60) [5 samples]
 ```
 
-The LLM sees the negative constraints **first** and **prominently marked**, priming it to treat them as hard rules rather than soft adjustments.
+The agent sees:
+- `folds_to_cbet` has **high disbelief (0.68)** and low uncertainty → reliable negative
+- `bluffs_river` has **high disbelief (0.72)** → villain does NOT bluff rivers
+- `is_aggressive` has **high belief (0.65)** → villain IS aggressive
+- `slowplays_monsters` has **high uncertainty (0.60)** → not enough data
 
-#### TRT Integration: Negative Constraints in Verification
+#### System Prompt: Explaining Disbelief Utility
 
-When TRT verifies candidate actions, strong disbeliefs surface as explicit warnings:
+The system prompt explains how to use disbelief for narrowing exploration:
 
 ```python
-class TRTVerifierWithSurfacedConstraints:
-    """
-    TRT verifier that surfaces disbelief-based constraints in reasoning.
-    """
+SYSTEM_PROMPT_BELIEF_SECTION = """
+## Understanding Belief Tuples
 
-    def verify_with_constraints(self, action: Action, state: GameState,
-                                 beliefs: VillainBeliefs) -> VerificationResult:
-        """
-        Verify action, surfacing any constraint violations clearly.
-        """
-        warnings = []
-        violations = []
+Beliefs are presented as subjective logic opinions: (b, d, u)
+- b (belief): Evidence FOR the proposition
+- d (disbelief): Evidence AGAINST the proposition
+- u (uncertainty): Lack of evidence (b + d + u = 1)
 
-        # Check each high-disbelief opinion
-        if action.action_type == ActionType.BET and state.street == Street.RIVER:
-            if beliefs.ω_folds_to_river_bet.has_strong_disbelief():
-                if not self._has_value(state):  # Bluffing
-                    violations.append(
-                        "⛔ CONSTRAINT VIOLATION: Betting river as bluff, "
-                        "but villain DOES NOT fold rivers"
-                    )
+Beliefs are sorted by knowledge (b + d), highest first. Higher knowledge
+means more evidence has been accumulated, making the belief more reliable.
 
-        if action.action_type == ActionType.FOLD and state.street == Street.RIVER:
-            if beliefs.ω_bluffs_river.has_strong_disbelief():
-                if self._has_showdown_value(state):
-                    violations.append(
-                        "⛔ CONSTRAINT VIOLATION: Folding with showdown value, "
-                        "but villain DOES NOT bluff rivers"
-                    )
+## The Value of Disbelief for Decision Making
 
-        return VerificationResult(
-            violations=violations,  # Surfaced prominently
-            warnings=warnings,
-            ev_estimate=self._calc_ev(action, state, beliefs)
-        )
+HIGH DISBELIEF IS ESPECIALLY VALUABLE. Here's why:
+
+1. **Disbelief narrows the search space**: If d(bluffs_river) = 0.72,
+   you can largely eliminate "villain is bluffing" from consideration.
+   This prunes entire branches of your reasoning tree.
+
+2. **Disbelief is more actionable than belief**: Knowing villain DOES NOT
+   do something eliminates options. Knowing villain MIGHT do something
+   only adjusts probabilities.
+
+3. **Use disbelief as constraints**: When d > 0.6 and u < 0.3, treat it
+   as a near-certain negative. Don't bluff someone who doesn't fold.
+   Don't fold to someone who doesn't bluff.
+
+4. **Belief requires more caution**: Even b = 0.7 means 30% chance you're
+   wrong. But d = 0.7 means the action is reliably NOT taken.
+
+## Decision Heuristics
+
+- High d, low u → Strong constraint (villain does NOT do X)
+- High b, low u → Strong tendency (villain DOES do X)
+- High u → Insufficient data, weight toward GTO/default play
+- Low knowledge (b+d) → Ignore this belief, not enough signal
+"""
 ```
 
-#### Practical Example
+#### TRT Integration: Disbelief Narrows Rollouts
+
+In TRT strategy rollouts, high disbelief prunes exploration:
 
 ```python
-# Situation: River, hero has middle pair, villain bets
+class TRTRolloutPruner:
+    """
+    Use high-disbelief beliefs to prune TRT rollout space.
 
-beliefs = VillainBeliefs(
-    ω_bluffs_river=Opinion(
-        belief=0.08,      # Rarely bluffs
-        disbelief=0.72,   # Strong: does NOT bluff
-        uncertainty=0.20,
-        base_rate=0.25
-    )
-)
+    Key insight: If we're confident villain DOESN'T do X,
+    don't waste compute exploring scenarios where villain does X.
+    """
 
-# Surfaced in prompt:
-# "⛔ Does NOT bluff rivers → call with any showdown value"
+    def get_villain_response_distribution(
+        self,
+        action: Action,
+        beliefs: VillainBeliefs,
+        game_state: GameState
+    ) -> dict[str, float]:
+        """
+        Get likely villain responses, using disbelief to narrow options.
+        """
+        responses = {}
 
-# When hero considers folding, TRT verification returns:
-# "⛔ CONSTRAINT VIOLATION: Folding with showdown value,
-#    but villain DOES NOT bluff rivers"
+        if action.action_type in (ActionType.BET, ActionType.RAISE):
+            # Check if villain folds
+            fold_belief = self._get_fold_belief(beliefs, game_state)
 
-# The LLM sees this clearly and reasons:
-# "Given the strong negative constraint that villain doesn't bluff,
-#  folding middle pair violates this constraint. I should call."
+            if fold_belief.disbelief > 0.6 and fold_belief.uncertainty < 0.3:
+                # HIGH DISBELIEF: Villain does NOT fold
+                # Prune fold from consideration entirely
+                responses["fold"] = 0.0
+                responses["call"] = 0.7
+                responses["raise"] = 0.3
+            else:
+                # Normal distribution based on projected probability
+                fold_prob = fold_belief.belief + fold_belief.base_rate * fold_belief.uncertainty
+                responses["fold"] = fold_prob
+                responses["call"] = (1 - fold_prob) * 0.7
+                responses["raise"] = (1 - fold_prob) * 0.3
+
+        return responses
+
+    def should_explore_bluff(self, beliefs: VillainBeliefs,
+                             game_state: GameState) -> bool:
+        """
+        Should we even consider bluffing in TRT rollouts?
+
+        If villain has high disbelief for folding, don't waste
+        compute on bluff rollouts.
+        """
+        fold_belief = self._get_fold_belief(beliefs, game_state)
+
+        # High disbelief + low uncertainty = don't explore bluffs
+        if fold_belief.disbelief > 0.6 and fold_belief.uncertainty < 0.3:
+            return False  # Prune bluff exploration entirely
+
+        return True
 ```
 
-This approach keeps the subjective logic math unchanged but ensures **strong disbeliefs are surfaced prominently** so the LLM can reason about them as "don't do" constraints.
+#### Practical Example: Agent Reasoning with Raw Tuples
+
+```
+[BELIEF STATE]
+Villain: player_42 (150 hands)
+
+Beliefs (sorted by knowledge, highest first):
+  bluffs_river:  (b=0.08, d=0.72, u=0.20) [25 samples]
+  folds_to_cbet: (b=0.12, d=0.68, u=0.20) [45 samples]
+
+[AGENT REASONING]
+Looking at the belief tuples:
+
+1. bluffs_river: d=0.72 with u=0.20 means strong evidence villain
+   does NOT bluff rivers. With 25 samples and only 20% uncertainty,
+   this is reliable. I should not fold with showdown value.
+
+2. folds_to_cbet: d=0.68 with u=0.20 means villain does NOT fold
+   to c-bets. Bluffing c-bet is -EV. Only c-bet for value.
+
+The high disbelief values narrow my decision space:
+- Eliminate: bluffing river, bluffing c-bet
+- Remaining: value bet or check
+
+This is simpler than reasoning about "maybe villain folds 20%..."
+The disbelief tells me what NOT to do, which is more actionable.
+```
+
+This approach:
+1. **Preserves information** - No rounding to natural language
+2. **Sorts by usefulness** - Most informative beliefs first
+3. **Explains disbelief's value** - System prompt teaches agent
+4. **Enables search pruning** - TRT uses disbelief to narrow rollouts
 
 ### Opinion Representation
 
