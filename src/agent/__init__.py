@@ -18,6 +18,10 @@ from .trt.strategy import (
     Strategy, StrategyEvaluation, RolloutResult, TRTDecision, TRTEngine
 )
 
+from .llm_client import (
+    create_claude_client, create_mock_client, check_api_available
+)
+
 __all__ = [
     # Tools
     'ToolName', 'ToolCall', 'ToolResult', 'Tool', 'ToolContext', 'ToolRegistry',
@@ -27,4 +31,6 @@ __all__ = [
     'AgentPhase', 'ReasoningStep', 'AgentDecision', 'ReActAgent',
     # TRT
     'Strategy', 'StrategyEvaluation', 'RolloutResult', 'TRTDecision', 'TRTEngine',
+    # LLM Client
+    'create_claude_client', 'create_mock_client', 'check_api_available',
 ]
