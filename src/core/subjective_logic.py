@@ -364,6 +364,321 @@ class Opinion:
         return -p * math.log2(p) - (1 - p) * math.log2(1 - p)
 
 
+# ============== Multinomial Opinions ==============
+
+@dataclass
+class MultinomialOpinion:
+    """
+    Multinomial subjective logic opinion over k mutually exclusive outcomes.
+
+    Used for categorical classifications where outcomes are mutually exclusive
+    (e.g., player type: TAG, LAG, NIT, Fish - a player can only be one).
+
+    Based on Dirichlet distribution, generalizes binomial SL to k categories.
+
+    Attributes:
+        beliefs: Dict mapping category -> belief mass (evidence FOR that category)
+        uncertainty: Uncommitted belief mass (lack of evidence)
+        base_rates: Dict mapping category -> prior probability
+
+    Constraint: sum(beliefs.values()) + uncertainty = 1
+    Constraint: sum(base_rates.values()) = 1
+    """
+    beliefs: dict[str, float]
+    uncertainty: float
+    base_rates: dict[str, float]
+
+    def __post_init__(self):
+        """Validate multinomial opinion constraints."""
+        # Check belief sum + uncertainty = 1
+        belief_sum = sum(self.beliefs.values())
+        total = belief_sum + self.uncertainty
+        if not math.isclose(total, 1.0, rel_tol=1e-6):
+            raise ValueError(
+                f"Beliefs + uncertainty must sum to 1.0, got {total:.6f}"
+            )
+
+        # Check base rates sum to 1
+        base_sum = sum(self.base_rates.values())
+        if not math.isclose(base_sum, 1.0, rel_tol=1e-6):
+            raise ValueError(
+                f"Base rates must sum to 1.0, got {base_sum:.6f}"
+            )
+
+        # Check all values in valid range
+        for cat, b in self.beliefs.items():
+            if not (0 <= b <= 1):
+                raise ValueError(f"Belief for {cat} must be in [0,1], got {b}")
+
+        if not (0 <= self.uncertainty <= 1):
+            raise ValueError(f"Uncertainty must be in [0,1], got {self.uncertainty}")
+
+        for cat, a in self.base_rates.items():
+            if not (0 <= a <= 1):
+                raise ValueError(f"Base rate for {cat} must be in [0,1], got {a}")
+
+        # Ensure same categories in beliefs and base_rates
+        if set(self.beliefs.keys()) != set(self.base_rates.keys()):
+            raise ValueError("Beliefs and base_rates must have same categories")
+
+    @property
+    def categories(self) -> list[str]:
+        """Get all category names."""
+        return list(self.beliefs.keys())
+
+    @property
+    def knowledge(self) -> float:
+        """
+        Total evidence accumulated: knowledge = 1 - uncertainty.
+
+        Higher knowledge = more informative opinion.
+        """
+        return 1 - self.uncertainty
+
+    @property
+    def is_vacuous(self) -> bool:
+        """True if maximally uncertain (no evidence)."""
+        return self.uncertainty > 0.99
+
+    @property
+    def is_dogmatic(self) -> bool:
+        """True if fully committed (no uncertainty)."""
+        return math.isclose(self.uncertainty, 0.0, abs_tol=1e-6)
+
+    def projected_probability(self, category: str) -> float:
+        """
+        Project opinion to probability for a category: P(x) = b_x + a_x * u
+
+        Args:
+            category: The category to get probability for
+
+        Returns:
+            Projected probability for that category
+        """
+        b = self.beliefs.get(category, 0.0)
+        a = self.base_rates.get(category, 0.0)
+        return b + a * self.uncertainty
+
+    def all_projected_probabilities(self) -> dict[str, float]:
+        """Get projected probabilities for all categories."""
+        return {cat: self.projected_probability(cat) for cat in self.categories}
+
+    def most_likely_category(self) -> tuple[str, float]:
+        """
+        Get the most likely category and its probability.
+
+        Returns:
+            (category_name, probability) tuple
+        """
+        probs = self.all_projected_probabilities()
+        best = max(probs.items(), key=lambda x: x[1])
+        return best
+
+    def to_dict(self) -> dict[str, float]:
+        """Return beliefs as dict for inspection."""
+        return dict(self.beliefs)
+
+    def to_tuple_str(self) -> str:
+        """
+        Format for agent consumption.
+
+        Format: {CAT1: b1, CAT2: b2, ..., u: uncertainty}
+        """
+        parts = [f"{cat}={b:.2f}" for cat, b in sorted(self.beliefs.items())]
+        parts.append(f"u={self.uncertainty:.2f}")
+        return "{" + ", ".join(parts) + "}"
+
+    def __str__(self) -> str:
+        return self.to_tuple_str()
+
+    def __repr__(self) -> str:
+        return f"MultinomialOpinion{self.to_tuple_str()}"
+
+    # ==================== Factory Methods ====================
+
+    @classmethod
+    def vacuous(cls, categories: list[str],
+                base_rates: Optional[dict[str, float]] = None) -> 'MultinomialOpinion':
+        """
+        Create a vacuous (maximally uncertain) multinomial opinion.
+
+        Args:
+            categories: List of category names
+            base_rates: Prior probabilities (uniform if not specified)
+        """
+        if base_rates is None:
+            # Uniform priors
+            base_rates = {cat: 1.0 / len(categories) for cat in categories}
+
+        beliefs = {cat: 0.0 for cat in categories}
+        return cls(beliefs, 1.0, base_rates)
+
+    @classmethod
+    def dogmatic(cls, category: str, all_categories: list[str],
+                 base_rates: Optional[dict[str, float]] = None) -> 'MultinomialOpinion':
+        """
+        Create a dogmatic opinion certain of one category.
+
+        Args:
+            category: The certain category
+            all_categories: All possible categories
+            base_rates: Prior probabilities
+        """
+        if base_rates is None:
+            base_rates = {cat: 1.0 / len(all_categories) for cat in all_categories}
+
+        beliefs = {cat: (1.0 if cat == category else 0.0) for cat in all_categories}
+        return cls(beliefs, 0.0, base_rates)
+
+    @classmethod
+    def from_observation(cls, observed_category: str, all_categories: list[str],
+                        confidence: float = 0.3,
+                        base_rates: Optional[dict[str, float]] = None) -> 'MultinomialOpinion':
+        """
+        Create opinion from a single observation.
+
+        Args:
+            observed_category: The category suggested by observation
+            all_categories: All possible categories
+            confidence: How much belief mass to assign (rest is uncertainty)
+            base_rates: Prior probabilities
+        """
+        if base_rates is None:
+            base_rates = {cat: 1.0 / len(all_categories) for cat in all_categories}
+
+        beliefs = {cat: 0.0 for cat in all_categories}
+        beliefs[observed_category] = confidence
+        uncertainty = 1.0 - confidence
+
+        return cls(beliefs, uncertainty, base_rates)
+
+    # ==================== SL Operators ====================
+
+    def cumulative_fusion(self, other: 'MultinomialOpinion') -> 'MultinomialOpinion':
+        """
+        Cumulative fusion for multinomial opinions.
+
+        Combines evidence from independent sources, reducing uncertainty.
+
+        Args:
+            other: Another multinomial opinion with same categories
+
+        Returns:
+            Fused opinion with accumulated evidence
+        """
+        if set(self.categories) != set(other.categories):
+            raise ValueError("Cannot fuse opinions with different categories")
+
+        u_A, u_B = self.uncertainty, other.uncertainty
+
+        # Handle dogmatic cases
+        if u_A == 0 and u_B == 0:
+            # Both dogmatic - average beliefs
+            new_beliefs = {
+                cat: (self.beliefs[cat] + other.beliefs[cat]) / 2
+                for cat in self.categories
+            }
+            new_base = {
+                cat: (self.base_rates[cat] + other.base_rates[cat]) / 2
+                for cat in self.categories
+            }
+            return MultinomialOpinion(new_beliefs, 0.0, new_base)
+
+        # Normalization factor
+        k = u_A + u_B - u_A * u_B
+        if k == 0:
+            return self
+
+        # Fusion formula for each category
+        new_beliefs = {}
+        for cat in self.categories:
+            b_A = self.beliefs[cat]
+            b_B = other.beliefs[cat]
+            new_beliefs[cat] = (b_A * u_B + b_B * u_A) / k
+
+        new_u = (u_A * u_B) / k
+
+        # Average base rates
+        new_base = {
+            cat: (self.base_rates[cat] + other.base_rates[cat]) / 2
+            for cat in self.categories
+        }
+
+        return MultinomialOpinion(new_beliefs, new_u, new_base)
+
+    def __add__(self, other: 'MultinomialOpinion') -> 'MultinomialOpinion':
+        """Operator overload for cumulative fusion."""
+        return self.cumulative_fusion(other)
+
+    def discount_by_factor(self, factor: float) -> 'MultinomialOpinion':
+        """
+        Discount opinion by a scalar factor.
+
+        Args:
+            factor: Discount factor (0 = vacuous, 1 = unchanged)
+
+        Returns:
+            Discounted opinion with increased uncertainty
+        """
+        if not 0 <= factor <= 1:
+            raise ValueError(f"Discount factor must be in [0,1], got {factor}")
+
+        new_beliefs = {cat: factor * b for cat, b in self.beliefs.items()}
+        new_u = 1 - factor * (1 - self.uncertainty)
+
+        return MultinomialOpinion(new_beliefs, new_u, dict(self.base_rates))
+
+    def update_from_evidence(self, evidence_category: str,
+                            strength: float = 0.2) -> 'MultinomialOpinion':
+        """
+        Update opinion based on new evidence favoring a category.
+
+        This is a convenience method that creates an evidence opinion
+        and fuses it with the current opinion.
+
+        Args:
+            evidence_category: Category supported by evidence
+            strength: Strength of evidence (0 to 1)
+
+        Returns:
+            Updated opinion
+        """
+        evidence = MultinomialOpinion.from_observation(
+            evidence_category, self.categories, strength, dict(self.base_rates)
+        )
+        return self.cumulative_fusion(evidence)
+
+
+@dataclass
+class MultinomialBelief:
+    """
+    A labeled multinomial belief for categorical classifications.
+
+    Used for mutually exclusive categories like player type.
+    """
+    label: str
+    opinion: MultinomialOpinion
+    category: str = "classification"
+
+    def __str__(self) -> str:
+        best_cat, prob = self.opinion.most_likely_category()
+        return f"{self.label}: {best_cat} ({prob:.0%}) {self.opinion}"
+
+    @property
+    def knowledge(self) -> float:
+        """Delegate to opinion's knowledge."""
+        return self.opinion.knowledge
+
+    def to_agent_format(self) -> str:
+        """
+        Format for agent consumption.
+
+        Shows most likely category plus full distribution.
+        """
+        best_cat, prob = self.opinion.most_likely_category()
+        return f"{self.label}: most likely {best_cat} ({prob:.0%}), dist={self.opinion.to_tuple_str()}"
+
+
 @dataclass
 class Belief:
     """

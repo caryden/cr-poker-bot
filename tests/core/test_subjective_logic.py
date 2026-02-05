@@ -3,7 +3,8 @@
 import pytest
 import math
 from src.core.subjective_logic import (
-    Opinion, Belief, sort_beliefs_by_knowledge, format_beliefs_for_agent
+    Opinion, Belief, sort_beliefs_by_knowledge, format_beliefs_for_agent,
+    MultinomialOpinion, MultinomialBelief
 )
 
 
@@ -290,3 +291,257 @@ class TestConfidenceWeightedValue:
     def test_vacuous_has_zero_value(self):
         vacuous = Opinion.vacuous()
         assert vacuous.confidence_weighted_value() == 0.0
+
+
+# ============== Multinomial Opinion Tests ==============
+
+class TestMultinomialOpinion:
+    """Tests for MultinomialOpinion class."""
+
+    def test_multinomial_creation(self):
+        beliefs = {"A": 0.3, "B": 0.2, "C": 0.0}
+        base_rates = {"A": 0.4, "B": 0.3, "C": 0.3}
+        op = MultinomialOpinion(beliefs, 0.5, base_rates)
+
+        assert op.beliefs["A"] == 0.3
+        assert op.uncertainty == 0.5
+        assert op.base_rates["A"] == 0.4
+
+    def test_multinomial_constraint_beliefs_plus_uncertainty(self):
+        # beliefs + uncertainty must equal 1
+        with pytest.raises(ValueError, match="must sum to 1.0"):
+            MultinomialOpinion(
+                {"A": 0.5, "B": 0.5},  # sum = 1.0
+                0.5,  # u = 0.5, total = 1.5
+                {"A": 0.5, "B": 0.5}
+            )
+
+    def test_multinomial_constraint_base_rates(self):
+        # base_rates must sum to 1
+        with pytest.raises(ValueError, match="Base rates must sum to 1.0"):
+            MultinomialOpinion(
+                {"A": 0.2, "B": 0.2},
+                0.6,
+                {"A": 0.3, "B": 0.3}  # sum = 0.6
+            )
+
+    def test_multinomial_categories_must_match(self):
+        # beliefs and base_rates must have same categories
+        with pytest.raises(ValueError, match="same categories"):
+            MultinomialOpinion(
+                {"A": 0.2, "B": 0.2},
+                0.6,
+                {"A": 0.5, "C": 0.5}  # different category
+            )
+
+    def test_multinomial_vacuous(self):
+        categories = ["TAG", "LAG", "NIT", "Fish"]
+        op = MultinomialOpinion.vacuous(categories)
+
+        assert op.uncertainty == 1.0
+        assert all(b == 0.0 for b in op.beliefs.values())
+        assert op.is_vacuous
+        # Uniform base rates
+        assert all(math.isclose(a, 0.25) for a in op.base_rates.values())
+
+    def test_multinomial_vacuous_with_custom_base_rates(self):
+        categories = ["A", "B", "C"]
+        base_rates = {"A": 0.5, "B": 0.3, "C": 0.2}
+        op = MultinomialOpinion.vacuous(categories, base_rates)
+
+        assert op.base_rates["A"] == 0.5
+        assert op.uncertainty == 1.0
+
+    def test_multinomial_projected_probability(self):
+        # P(x) = b_x + a_x * u
+        beliefs = {"A": 0.3, "B": 0.1}
+        base_rates = {"A": 0.6, "B": 0.4}
+        op = MultinomialOpinion(beliefs, 0.6, base_rates)
+
+        # P(A) = 0.3 + 0.6 * 0.6 = 0.3 + 0.36 = 0.66
+        assert math.isclose(op.projected_probability("A"), 0.66)
+        # P(B) = 0.1 + 0.4 * 0.6 = 0.1 + 0.24 = 0.34
+        assert math.isclose(op.projected_probability("B"), 0.34)
+
+    def test_multinomial_all_projected_probabilities(self):
+        categories = ["A", "B", "C"]
+        op = MultinomialOpinion.vacuous(categories)
+
+        probs = op.all_projected_probabilities()
+
+        # With vacuous opinion and uniform priors, all equal
+        assert all(math.isclose(p, 1/3) for p in probs.values())
+
+    def test_multinomial_most_likely_category(self):
+        beliefs = {"TAG": 0.4, "LAG": 0.1, "Fish": 0.1}
+        base_rates = {"TAG": 0.3, "LAG": 0.3, "Fish": 0.4}
+        op = MultinomialOpinion(beliefs, 0.4, base_rates)
+
+        best_cat, prob = op.most_likely_category()
+
+        assert best_cat == "TAG"  # Highest projected probability
+
+    def test_multinomial_knowledge(self):
+        beliefs = {"A": 0.3, "B": 0.2}
+        op = MultinomialOpinion(beliefs, 0.5, {"A": 0.5, "B": 0.5})
+
+        assert op.knowledge == 0.5  # 1 - uncertainty
+
+    def test_multinomial_dogmatic(self):
+        categories = ["A", "B", "C"]
+        op = MultinomialOpinion.dogmatic("B", categories)
+
+        assert op.uncertainty == 0.0
+        assert op.beliefs["B"] == 1.0
+        assert op.beliefs["A"] == 0.0
+        assert op.is_dogmatic
+
+    def test_multinomial_from_observation(self):
+        categories = ["TAG", "LAG", "NIT", "Fish"]
+        op = MultinomialOpinion.from_observation("Fish", categories, confidence=0.3)
+
+        assert op.beliefs["Fish"] == 0.3
+        assert op.beliefs["TAG"] == 0.0
+        assert op.uncertainty == 0.7
+
+
+class TestMultinomialFusion:
+    """Tests for multinomial cumulative fusion."""
+
+    def test_fusion_reduces_uncertainty(self):
+        categories = ["A", "B", "C"]
+        op1 = MultinomialOpinion.from_observation("A", categories, 0.3)
+        op2 = MultinomialOpinion.from_observation("A", categories, 0.3)
+
+        fused = op1.cumulative_fusion(op2)
+
+        # Uncertainty should decrease
+        assert fused.uncertainty < op1.uncertainty
+        # Belief in A should increase
+        assert fused.beliefs["A"] > op1.beliefs["A"]
+
+    def test_fusion_with_vacuous(self):
+        categories = ["A", "B"]
+        op = MultinomialOpinion.from_observation("A", categories, 0.4)
+        vacuous = MultinomialOpinion.vacuous(categories)
+
+        fused = op.cumulative_fusion(vacuous)
+
+        # Should be close to original
+        assert math.isclose(fused.beliefs["A"], op.beliefs["A"], rel_tol=0.01)
+
+    def test_fusion_operator_overload(self):
+        categories = ["X", "Y"]
+        op1 = MultinomialOpinion.from_observation("X", categories, 0.3)
+        op2 = MultinomialOpinion.from_observation("X", categories, 0.2)
+
+        fused1 = op1.cumulative_fusion(op2)
+        fused2 = op1 + op2
+
+        assert fused1.uncertainty == fused2.uncertainty
+        assert fused1.beliefs["X"] == fused2.beliefs["X"]
+
+    def test_fusion_preserves_constraint(self):
+        categories = ["A", "B", "C"]
+        op1 = MultinomialOpinion.from_observation("A", categories, 0.4)
+        op2 = MultinomialOpinion.from_observation("B", categories, 0.3)
+
+        fused = op1 + op2
+
+        # beliefs + uncertainty must equal 1
+        total = sum(fused.beliefs.values()) + fused.uncertainty
+        assert math.isclose(total, 1.0)
+
+    def test_fusion_different_categories_raises(self):
+        op1 = MultinomialOpinion.vacuous(["A", "B"])
+        op2 = MultinomialOpinion.vacuous(["X", "Y"])
+
+        with pytest.raises(ValueError, match="different categories"):
+            op1.cumulative_fusion(op2)
+
+
+class TestMultinomialDiscount:
+    """Tests for multinomial discount operator."""
+
+    def test_discount_increases_uncertainty(self):
+        categories = ["A", "B"]
+        op = MultinomialOpinion.from_observation("A", categories, 0.5)
+
+        discounted = op.discount_by_factor(0.5)
+
+        assert discounted.uncertainty > op.uncertainty
+        assert discounted.beliefs["A"] < op.beliefs["A"]
+
+    def test_full_discount_preserves(self):
+        categories = ["A", "B"]
+        op = MultinomialOpinion.from_observation("A", categories, 0.4)
+
+        discounted = op.discount_by_factor(1.0)
+
+        assert math.isclose(discounted.uncertainty, op.uncertainty)
+        assert math.isclose(discounted.beliefs["A"], op.beliefs["A"])
+
+    def test_zero_discount_gives_vacuous(self):
+        categories = ["A", "B"]
+        op = MultinomialOpinion.from_observation("A", categories, 0.6)
+
+        discounted = op.discount_by_factor(0.0)
+
+        assert math.isclose(discounted.uncertainty, 1.0)
+
+
+class TestMultinomialUpdateFromEvidence:
+    """Tests for update_from_evidence convenience method."""
+
+    def test_update_from_evidence(self):
+        categories = ["TAG", "LAG", "Fish"]
+        op = MultinomialOpinion.vacuous(categories)
+
+        updated = op.update_from_evidence("Fish", strength=0.3)
+
+        # Belief in Fish should increase
+        assert updated.beliefs["Fish"] > op.beliefs["Fish"]
+        # Uncertainty should decrease
+        assert updated.uncertainty < op.uncertainty
+
+    def test_repeated_evidence_accumulates(self):
+        categories = ["A", "B", "C"]
+        op = MultinomialOpinion.vacuous(categories)
+
+        # Multiple observations of same category
+        for _ in range(5):
+            op = op.update_from_evidence("A", strength=0.2)
+
+        # Should now strongly believe A
+        best_cat, prob = op.most_likely_category()
+        assert best_cat == "A"
+        assert prob > 0.5
+
+
+class TestMultinomialBelief:
+    """Tests for MultinomialBelief wrapper."""
+
+    def test_multinomial_belief_creation(self):
+        categories = ["TAG", "LAG", "NIT", "Fish"]
+        op = MultinomialOpinion.vacuous(categories)
+        belief = MultinomialBelief("player_type", op, "classification")
+
+        assert belief.label == "player_type"
+        assert belief.category == "classification"
+
+    def test_multinomial_belief_to_agent_format(self):
+        categories = ["TAG", "LAG", "Fish"]
+        op = MultinomialOpinion.from_observation("TAG", categories, 0.5)
+        belief = MultinomialBelief("player_type", op)
+
+        formatted = belief.to_agent_format()
+
+        assert "player_type" in formatted
+        assert "TAG" in formatted
+
+    def test_multinomial_belief_knowledge(self):
+        categories = ["A", "B"]
+        op = MultinomialOpinion.from_observation("A", categories, 0.4)
+        belief = MultinomialBelief("test", op)
+
+        assert belief.knowledge == op.knowledge

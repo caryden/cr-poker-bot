@@ -93,14 +93,17 @@ Based on research into state-of-the-art agents (Libratus, Pluribus, DeepStack, R
 ### Subjective Logic Terms
 | Term | Definition |
 |------|------------|
-| **Opinion** | Tuple (b, d, u, a) representing belief state |
+| **Binomial Opinion** | Tuple (b, d, u, a) for binary propositions (b + d + u = 1) |
+| **Multinomial Opinion** | Opinion over k mutually exclusive categories (Σb_i + u = 1) |
 | **Belief (b)** | Degree of belief that proposition is true |
 | **Disbelief (d)** | Degree of belief that proposition is false |
 | **Uncertainty (u)** | Degree of uncommitted belief (lack of evidence) |
 | **Base Rate (a)** | Prior probability when uncertainty is maximal |
-| **Projected Probability** | P = b + a·u - probability accounting for uncertainty |
+| **Projected Probability** | Binomial: P = b + a·u; Multinomial: P(x) = b_x + a_x·u |
 | **Vacuous Opinion** | Maximum uncertainty (0, 0, 1, a) - no evidence |
 | **Dogmatic Opinion** | Zero uncertainty - complete certainty |
+| **Cumulative Fusion** | Combining independent evidence (reduces uncertainty) |
+| **Trust Discount** | Scaling evidence by source reliability |
 
 ### Test-Time Reasoning Terms
 | Term | Definition |
@@ -112,9 +115,6 @@ Based on research into state-of-the-art agents (Libratus, Pluribus, DeepStack, R
 | **Back-Verification** | Working backward from answer to check validity |
 | **Accumulated Knowledge** | Information gathered across reasoning iterations |
 | **Convergence** | When further iterations no longer improve the solution |
-| **Vacuous Opinion** | Maximum uncertainty (0, 0, 1, a) - no evidence |
-| **Dogmatic Opinion** | Zero uncertainty - complete certainty |
-| **Projected Probability** | P = b + a·u - probability accounting for uncertainty |
 
 ---
 
@@ -1804,61 +1804,130 @@ class Opinion:
         return Opinion(b, d, u, a)
 ```
 
-**Per-Villain Belief Tracking**:
+**Multinomial Subjective Logic** (for mutually exclusive categories):
 
 ```python
 @dataclass
+class MultinomialOpinion:
+    """
+    Multinomial subjective logic opinion over k mutually exclusive outcomes.
+
+    Used for categorical classifications where outcomes are mutually exclusive
+    (e.g., player type: TAG, LAG, NIT, Fish, Maniac - a player can only be one).
+
+    Constraint: sum(beliefs.values()) + uncertainty = 1
+    Constraint: sum(base_rates.values()) = 1
+    """
+    beliefs: dict[str, float]       # b_i for each category
+    uncertainty: float              # u (uncommitted mass)
+    base_rates: dict[str, float]    # a_i (priors, sum to 1)
+
+    def projected_probability(self, category: str) -> float:
+        """P(x) = b_x + a_x * u"""
+        return self.beliefs[category] + self.base_rates[category] * self.uncertainty
+
+    def most_likely_category(self) -> tuple[str, float]:
+        """Get most likely category and its projected probability."""
+        probs = {cat: self.projected_probability(cat) for cat in self.beliefs}
+        return max(probs.items(), key=lambda x: x[1])
+
+    def cumulative_fusion(self, other: 'MultinomialOpinion') -> 'MultinomialOpinion':
+        """Combine evidence from independent sources."""
+        k = self.uncertainty + other.uncertainty - self.uncertainty * other.uncertainty
+        new_beliefs = {
+            cat: (self.beliefs[cat] * other.uncertainty +
+                  other.beliefs[cat] * self.uncertainty) / k
+            for cat in self.beliefs
+        }
+        new_u = (self.uncertainty * other.uncertainty) / k
+        return MultinomialOpinion(new_beliefs, new_u, self.base_rates)
+
+    def update_from_evidence(self, category: str, strength: float) -> 'MultinomialOpinion':
+        """Update with new evidence favoring a category."""
+        evidence = MultinomialOpinion.from_observation(
+            category, list(self.beliefs.keys()), strength, self.base_rates
+        )
+        return self.cumulative_fusion(evidence)
+
+    @classmethod
+    def vacuous(cls, categories: list[str],
+                base_rates: dict[str, float] = None) -> 'MultinomialOpinion':
+        """Create vacuous (maximally uncertain) opinion."""
+        if base_rates is None:
+            base_rates = {cat: 1.0 / len(categories) for cat in categories}
+        beliefs = {cat: 0.0 for cat in categories}
+        return cls(beliefs, 1.0, base_rates)
+
+    @classmethod
+    def from_observation(cls, observed: str, categories: list[str],
+                        confidence: float = 0.3,
+                        base_rates: dict[str, float] = None) -> 'MultinomialOpinion':
+        """Create opinion from single observation."""
+        if base_rates is None:
+            base_rates = {cat: 1.0 / len(categories) for cat in categories}
+        beliefs = {cat: (confidence if cat == observed else 0.0) for cat in categories}
+        return cls(beliefs, 1.0 - confidence, base_rates)
+```
+
+**Per-Villain Belief Tracking**:
+
+Player types are **mutually exclusive** (a player can only be one type) so we use **multinomial SL**.
+Tendencies like "bluffs often" are **not mutually exclusive** so we use **binomial SL**.
+
+```python
+# Player type categories (mutually exclusive)
+PLAYER_TYPES = ["TAG", "LAG", "NIT", "Fish", "Maniac"]
+
+# Default base rates (sum to 1.0)
+DEFAULT_PLAYER_TYPE_BASE_RATES = {
+    "TAG": 0.20,     # Tight-Aggressive (competent regulars)
+    "LAG": 0.15,     # Loose-Aggressive (sophisticated players)
+    "NIT": 0.10,     # Very tight (risk-averse)
+    "Fish": 0.45,    # Recreational (most common in low stakes)
+    "Maniac": 0.10,  # Hyper-aggressive (rare)
+}
+
+@dataclass
 class VillainBeliefs:
-    """Subjective logic beliefs about a single opponent"""
+    """Subjective logic beliefs about a single opponent.
 
-    villain_id: str
-    hands_observed: int = 0
+    Uses multinomial SL for player type (mutually exclusive categories)
+    and binomial SL for tendencies (non-mutually exclusive).
+    """
+    player_id: str
+    beliefs: dict[str, Belief] = field(default_factory=dict)
 
-    # Player type beliefs (multinomial - one must be true)
-    type_opinions: dict[str, Opinion] = field(default_factory=lambda: {
-        "TAG": Opinion.vacuous(0.25),   # Tight-Aggressive
-        "LAG": Opinion.vacuous(0.15),   # Loose-Aggressive
-        "Nit": Opinion.vacuous(0.15),   # Tight-Passive
-        "Fish": Opinion.vacuous(0.30),  # Loose-Passive (most common)
-        "Maniac": Opinion.vacuous(0.05),
-        "Unknown": Opinion.vacuous(0.10),
-    })
+    # Multinomial opinion for mutually exclusive player types
+    player_type: MultinomialOpinion = field(
+        default_factory=lambda: MultinomialOpinion.vacuous(
+            PLAYER_TYPES, DEFAULT_PLAYER_TYPE_BASE_RATES
+        )
+    )
 
-    # Tendency beliefs (independent binomial)
-    ω_folds_to_cbet: Opinion = field(default_factory=lambda: Opinion.vacuous(0.45))
-    ω_folds_to_3bet: Opinion = field(default_factory=lambda: Opinion.vacuous(0.55))
-    ω_bluffs_river: Opinion = field(default_factory=lambda: Opinion.vacuous(0.25))
-    ω_continuation_bets: Opinion = field(default_factory=lambda: Opinion.vacuous(0.65))
-    ω_check_raises: Opinion = field(default_factory=lambda: Opinion.vacuous(0.08))
+    def update_player_type(self, evidence_type: str, strength: float = 0.2) -> None:
+        """Update player type belief based on evidence."""
+        self.player_type = self.player_type.update_from_evidence(evidence_type, strength)
 
-    # Skill assessment
-    ω_is_skilled: Opinion = field(default_factory=lambda: Opinion.vacuous(0.30))
+    def get_most_likely_player_type(self) -> tuple[str, float]:
+        """Get most likely player type and its probability."""
+        return self.player_type.most_likely_category()
 
-    def get_projected_type(self) -> tuple[str, float, float]:
-        """Return (type, probability, uncertainty) for most likely type"""
-        best = max(self.type_opinions.items(),
-                   key=lambda x: x[1].projected_probability)
-        return (best[0], best[1].projected_probability, best[1].uncertainty)
+    def to_agent_format(self) -> str:
+        """Format beliefs for agent consumption."""
+        lines = [f"Beliefs about {self.player_id}:"]
 
-    def get_exploitation_confidence(self) -> float:
-        """
-        How confident are we in exploiting this villain?
+        # Player type (multinomial) - show most likely + distribution
+        best_type, prob = self.player_type.most_likely_category()
+        lines.append(f"  Player type: most likely {best_type} ({prob:.0%})")
+        lines.append(f"    Distribution: {self.player_type.to_tuple_str()}")
 
-        Returns 0-1 where:
-        - 0 = stay GTO (high uncertainty)
-        - 1 = exploit maximally (low uncertainty, clear patterns)
-        """
-        # Average uncertainty across key beliefs
-        beliefs = [
-            self.ω_folds_to_cbet,
-            self.ω_folds_to_3bet,
-            self.ω_bluffs_river,
-        ]
-        avg_uncertainty = sum(b.uncertainty for b in beliefs) / len(beliefs)
+        # Tendencies (binomial) - sorted by knowledge
+        if self.beliefs:
+            lines.append("  Tendencies:")
+            for belief in sorted(self.beliefs.values(), key=lambda b: b.knowledge, reverse=True):
+                lines.append(f"    {belief.to_agent_format()}")
 
-        # Convert to confidence (sigmoid centered at 0.3 uncertainty)
-        import math
-        return 1 / (1 + math.exp(10 * (avg_uncertainty - 0.3)))
+        return "\n".join(lines)
 
 
 @dataclass

@@ -15,7 +15,10 @@ from datetime import datetime
 from typing import Optional, Callable
 from enum import Enum, auto
 
-from .subjective_logic import Opinion, Belief, sort_beliefs_by_knowledge
+from .subjective_logic import (
+    Opinion, Belief, sort_beliefs_by_knowledge,
+    MultinomialOpinion, MultinomialBelief
+)
 from .primitives import Action, ActionType, Position, Street, HoleCards, Card
 from .game_state import GameState
 
@@ -100,6 +103,19 @@ class BeliefCategory:
     POSITIONAL_AWARENESS = "positional_awareness"
     HAND_RANGE = "hand_range"
     TENDENCY = "tendency"
+
+
+# Player type categories (mutually exclusive - use multinomial SL)
+PLAYER_TYPES = ["TAG", "LAG", "NIT", "Fish", "Maniac"]
+
+# Default base rates for player types (sum to 1.0)
+DEFAULT_PLAYER_TYPE_BASE_RATES = {
+    "TAG": 0.20,     # Tight-Aggressive (competent regulars)
+    "LAG": 0.15,     # Loose-Aggressive (sophisticated players)
+    "NIT": 0.10,     # Very tight (risk-averse)
+    "Fish": 0.45,    # Recreational (most common in low stakes)
+    "Maniac": 0.10,  # Hyper-aggressive (rare)
+}
 
 
 # ============== Observation-Belief Mapper ==============
@@ -200,7 +216,7 @@ class ObservationBeliefMapper:
 
     def _player_type_consistency(self, action: Action, ctx: GameContext,
                                  belief: Belief) -> tuple[Opinion, str]:
-        """Consistency with player type beliefs (TAG, LAG, NIT, etc.)."""
+        """Consistency with player type beliefs (legacy binomial - for backwards compat)."""
         label_lower = belief.label.lower()
 
         # Nit/tight beliefs
@@ -209,7 +225,6 @@ class ObservationBeliefMapper:
                 return (Opinion(0.4, 0.1, 0.5, 0.3),
                         "Fold consistent with tight style")
             elif action.action_type.is_aggressive and ctx.street == Street.PREFLOP:
-                # Tight player raising preflop = strong hand
                 return (Opinion(0.3, 0.2, 0.5, 0.3),
                         "Preflop raise from tight player - ambiguous")
 
@@ -235,6 +250,84 @@ class ObservationBeliefMapper:
                         "Calling consistent with recreational player")
 
         return (Opinion.vacuous(), "No clear signal for player type")
+
+    def compute_player_type_evidence(self, obs: Observation) -> Optional[tuple[str, float, str]]:
+        """
+        Compute evidence for multinomial player type from an observation.
+
+        Returns:
+            Optional tuple of (player_type, evidence_strength, reasoning)
+            Returns None if observation provides no player type signal.
+        """
+        if obs.obs_type == ObservationType.ACTION:
+            return self._action_to_player_type(obs.action, obs.context)
+        elif obs.obs_type == ObservationType.SHOWDOWN:
+            return self._showdown_to_player_type(obs.revealed_cards, obs)
+        return None
+
+    def _action_to_player_type(self, action: Action,
+                               ctx: Optional[GameContext]) -> Optional[tuple[str, float, str]]:
+        """Map action to player type evidence."""
+        if action is None or ctx is None:
+            return None
+
+        # Preflop actions are most indicative of player type
+        if ctx.street == Street.PREFLOP:
+            if action.action_type == ActionType.FOLD:
+                # Folding preflop suggests tight (NIT or TAG)
+                return ("NIT", 0.15, "Preflop fold suggests tight style")
+
+            elif action.action_type == ActionType.CALL:
+                # Limping/calling preflop suggests Fish
+                return ("Fish", 0.20, "Preflop limp/call suggests recreational")
+
+            elif action.action_type.is_aggressive:
+                if ctx.facing_raise:
+                    # 3-betting suggests LAG or TAG
+                    if ctx.raise_count >= 2:
+                        # 4-bet+ suggests LAG or Maniac
+                        return ("LAG", 0.25, "4-bet+ suggests loose-aggressive or maniac")
+                    else:
+                        # 3-bet is somewhat balanced between TAG and LAG
+                        return ("TAG", 0.10, "3-bet mildly suggests TAG (could be LAG too)")
+                else:
+                    # Open raise - balanced action, weak signal
+                    return None
+
+        # Postflop actions
+        else:
+            if action.action_type.is_aggressive:
+                # Postflop aggression slightly suggests LAG
+                return ("LAG", 0.10, "Postflop aggression mildly suggests LAG")
+            elif action.action_type == ActionType.CALL:
+                # Postflop calling suggests Fish (calling station behavior)
+                return ("Fish", 0.15, "Postflop calling suggests recreational")
+            elif action.action_type == ActionType.FOLD:
+                # Postflop fold is weak signal for NIT
+                return ("NIT", 0.08, "Postflop fold weakly suggests tight style")
+
+        return None
+
+    def _showdown_to_player_type(self, cards: Optional[HoleCards],
+                                  obs: Observation) -> Optional[tuple[str, float, str]]:
+        """Infer player type from showdown cards."""
+        if cards is None:
+            return None
+
+        is_premium = cards.notation in ('AA', 'KK', 'QQ', 'JJ', 'AKs', 'AKo', 'AQs')
+        is_trash = cards.card1.rank.value <= 7 and cards.card2.rank.value <= 7 and not cards.is_pair
+
+        if is_trash:
+            # Showing trash suggests LAG, Maniac, or Fish
+            # If they were aggressive, more likely LAG/Maniac
+            # If they were passive, more likely Fish
+            return ("LAG", 0.30, f"Showing {cards.notation} (weak hand) suggests LAG/Maniac")
+
+        elif is_premium:
+            # Showing premium could be TAG or NIT
+            return ("TAG", 0.15, f"Showing {cards.notation} (premium) suggests TAG or NIT")
+
+        return None
 
     def _bluff_freq_consistency(self, action: Action, ctx: GameContext,
                                 belief: Belief) -> tuple[Opinion, str]:
@@ -472,36 +565,79 @@ class SLBeliefReviser:
 
 @dataclass
 class VillainBeliefs:
-    """Beliefs about a specific opponent."""
+    """
+    Beliefs about a specific opponent.
+
+    Uses multinomial SL for player type (mutually exclusive categories)
+    and binomial SL for tendencies (non-mutually exclusive).
+    """
     player_id: str
     beliefs: dict[str, Belief] = field(default_factory=dict)
+    player_type: Optional[MultinomialOpinion] = None  # Multinomial for mutually exclusive types
+
+    def __post_init__(self):
+        """Initialize player type with vacuous opinion if not set."""
+        if self.player_type is None:
+            self.player_type = MultinomialOpinion.vacuous(
+                PLAYER_TYPES, DEFAULT_PLAYER_TYPE_BASE_RATES
+            )
 
     def add_belief(self, label: str, opinion: Opinion,
                    category: str = "general") -> None:
-        """Add or update a belief."""
+        """Add or update a binomial belief (for tendencies)."""
         self.beliefs[label] = Belief(label, opinion, category)
 
     def get_belief(self, label: str) -> Optional[Belief]:
-        """Get a specific belief."""
+        """Get a specific binomial belief."""
         return self.beliefs.get(label)
 
+    def update_player_type(self, evidence_type: str, strength: float = 0.2) -> None:
+        """
+        Update player type belief based on evidence.
+
+        Args:
+            evidence_type: Player type suggested by observation (TAG, LAG, NIT, Fish, Maniac)
+            strength: Strength of evidence (0 to 1)
+        """
+        if evidence_type not in PLAYER_TYPES:
+            raise ValueError(f"Unknown player type: {evidence_type}. Must be one of {PLAYER_TYPES}")
+        self.player_type = self.player_type.update_from_evidence(evidence_type, strength)
+
+    def get_player_type_distribution(self) -> dict[str, float]:
+        """Get projected probability distribution over player types."""
+        return self.player_type.all_projected_probabilities()
+
+    def get_most_likely_player_type(self) -> tuple[str, float]:
+        """Get most likely player type and its probability."""
+        return self.player_type.most_likely_category()
+
     def all_beliefs(self) -> list[Belief]:
-        """Get all beliefs as a list."""
+        """Get all binomial beliefs as a list."""
         return list(self.beliefs.values())
 
     def beliefs_by_category(self, category: str) -> list[Belief]:
-        """Get beliefs in a specific category."""
+        """Get binomial beliefs in a specific category."""
         return [b for b in self.beliefs.values() if b.category == category]
 
     def sorted_by_knowledge(self) -> list[Belief]:
-        """Get beliefs sorted by knowledge (most informative first)."""
+        """Get binomial beliefs sorted by knowledge (most informative first)."""
         return sort_beliefs_by_knowledge(self.all_beliefs())
 
     def to_agent_format(self) -> str:
         """Format beliefs for agent consumption."""
         lines = [f"Beliefs about {self.player_id}:"]
-        for belief in self.sorted_by_knowledge():
-            lines.append(f"  {belief.to_agent_format()}")
+
+        # Player type (multinomial) - show most likely + distribution
+        best_type, prob = self.player_type.most_likely_category()
+        lines.append(f"  Player type: most likely {best_type} ({prob:.0%})")
+        lines.append(f"    Distribution: {self.player_type.to_tuple_str()}")
+
+        # Tendencies (binomial) - sorted by knowledge
+        if self.beliefs:
+            lines.append("  Tendencies:")
+            for belief in self.sorted_by_knowledge():
+                lines.append(f"    {belief.to_agent_format()}")
+
         return "\n".join(lines)
 
 
@@ -578,6 +714,8 @@ class BeliefRevisionEngine:
         """
         Process a single observation and update beliefs.
 
+        Updates both multinomial player type and binomial tendency beliefs.
+
         Args:
             obs: The observation to process
             belief_state: Current belief state
@@ -591,7 +729,15 @@ class BeliefRevisionEngine:
         if obs.player_id:
             villain_beliefs = belief_state.get_or_create_villain(obs.player_id)
 
-            # Revise each belief based on observation consistency
+            # Update multinomial player type
+            player_type_evidence = self.mapper.compute_player_type_evidence(obs)
+            if player_type_evidence is not None:
+                evidence_type, strength, _ = player_type_evidence
+                # Apply trust discount to evidence strength
+                discounted_strength = strength * self.reviser.trust_discount
+                villain_beliefs.update_player_type(evidence_type, discounted_strength)
+
+            # Revise each binomial belief based on observation consistency
             for label, belief in list(villain_beliefs.beliefs.items()):
                 consistency = self.mapper.compute_consistency(obs, belief)
 
@@ -640,25 +786,16 @@ def create_default_villain_beliefs(player_id: str) -> VillainBeliefs:
     """
     Create default (uncertain) beliefs for a new villain.
 
-    Starts with vacuous or slightly informed priors.
+    Uses multinomial SL for player type (mutually exclusive: TAG, LAG, NIT, Fish, Maniac)
+    and binomial SL for tendencies (not mutually exclusive).
     """
+    # Player type is initialized with vacuous multinomial in VillainBeliefs.__post_init__
     beliefs = VillainBeliefs(player_id)
 
-    # Player type beliefs - start vacuous
-    beliefs.add_belief("is TAG (Tight-Aggressive)",
-                       Opinion.vacuous(base_rate=0.25),
-                       BeliefCategory.PLAYER_TYPE)
-    beliefs.add_belief("is LAG (Loose-Aggressive)",
-                       Opinion.vacuous(base_rate=0.15),
-                       BeliefCategory.PLAYER_TYPE)
-    beliefs.add_belief("is NIT (Very Tight)",
-                       Opinion.vacuous(base_rate=0.15),
-                       BeliefCategory.PLAYER_TYPE)
-    beliefs.add_belief("is Fish (Recreational)",
-                       Opinion.vacuous(base_rate=0.35),
-                       BeliefCategory.PLAYER_TYPE)
+    # Tendencies (binomial) - these are NOT mutually exclusive
+    # A TAG can be aggressive, a LAG can be positionally aware, etc.
 
-    # Aggression beliefs
+    # Aggression tendencies
     beliefs.add_belief("is aggressive",
                        Opinion.vacuous(base_rate=0.4),
                        BeliefCategory.AGGRESSION)
@@ -666,7 +803,7 @@ def create_default_villain_beliefs(player_id: str) -> VillainBeliefs:
                        Opinion.vacuous(base_rate=0.4),
                        BeliefCategory.AGGRESSION)
 
-    # Bluff frequency
+    # Bluff frequency tendencies
     beliefs.add_belief("bluffs often (high frequency)",
                        Opinion.vacuous(base_rate=0.3),
                        BeliefCategory.BLUFF_FREQUENCY)

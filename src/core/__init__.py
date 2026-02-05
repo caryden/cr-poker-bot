@@ -18,12 +18,14 @@ from .game_state import (
 
 from .subjective_logic import (
     Opinion, Belief,
+    MultinomialOpinion, MultinomialBelief,
     sort_beliefs_by_knowledge, format_beliefs_for_agent
 )
 
 from .beliefs import (
     ObservationType, GameContext, Observation,
     ConsistencyOpinion, BeliefCategory,
+    PLAYER_TYPES, DEFAULT_PLAYER_TYPE_BASE_RATES,
     ObservationBeliefMapper, SLBeliefReviser,
     VillainBeliefs, BeliefState, BeliefRevisionEngine,
     create_default_villain_beliefs
@@ -39,10 +41,12 @@ __all__ = [
     'TableState', 'GameState', 'create_6max_game',
     # Subjective logic
     'Opinion', 'Belief',
+    'MultinomialOpinion', 'MultinomialBelief',
     'sort_beliefs_by_knowledge', 'format_beliefs_for_agent',
     # Beliefs
     'ObservationType', 'GameContext', 'Observation',
     'ConsistencyOpinion', 'BeliefCategory',
+    'PLAYER_TYPES', 'DEFAULT_PLAYER_TYPE_BASE_RATES',
     'ObservationBeliefMapper', 'SLBeliefReviser',
     'VillainBeliefs', 'BeliefState', 'BeliefRevisionEngine',
     'create_default_villain_beliefs',
