@@ -303,6 +303,8 @@ class TagBot:
     def _preflop_decision(self, player: PlayerState, game: GameState,
                           legal_types: set[ActionType]) -> Action:
         """Make preflop decision based on position and hand."""
+        from ..tools.gto import ActionRecommendation
+
         hand = player.hole_cards
         to_call = game.to_call
         bb = game.table.big_blind
@@ -311,17 +313,18 @@ class TagBot:
         if to_call <= bb:
             # No raise in front - consider opening
             rec = should_open(hand, player.position)
-            if rec.should_act and rec.action_type in (ActionType.BET, ActionType.RAISE):
+            if rec.primary_action == ActionRecommendation.RAISE:
                 if ActionType.RAISE in legal_types:
                     return Action.raise_to(bb * 2.5)
 
         elif to_call > bb:
             # Facing a raise - consider 3-betting
             rec = should_3bet(hand, player.position, Position.CO)  # Assume CO opened
-            if rec.should_act:
-                if rec.action_type == ActionType.RAISE and ActionType.RAISE in legal_types:
+            if rec.primary_action == ActionRecommendation.RAISE:
+                if ActionType.RAISE in legal_types:
                     return Action.raise_to(to_call * 3)
-                elif rec.action_type == ActionType.CALL and ActionType.CALL in legal_types:
+            elif rec.primary_action == ActionRecommendation.CALL:
+                if ActionType.CALL in legal_types:
                     return Action.call(to_call)
 
         # Default fold
