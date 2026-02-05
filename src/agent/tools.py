@@ -17,6 +17,11 @@ from ..tools.hand_eval import evaluate_hand, HandEvaluation
 from ..tools.equity import calculate_equity, calculate_equity_vs_range, HandRange, EquityResult
 from ..tools.pot_odds import pot_odds, expected_value_call, minimum_defense_frequency, PotOddsResult, EVResult
 from ..tools.gto import should_open, should_3bet, should_4bet, GTORecommendation
+from ..tools.board_texture import analyze_board, BoardTexture
+from ..tools.bet_sizing import (
+    get_postflop_sizing, get_preflop_sizing,
+    HandStrengthCategory, BetSizing
+)
 
 
 class ToolName(Enum):
@@ -27,6 +32,8 @@ class ToolName(Enum):
     EV_CALC = "ev_calc"
     GTO_ADVISOR = "gto_advisor"
     BELIEF_QUERY = "belief_query"
+    BOARD_TEXTURE = "board_texture"
+    BET_SIZING = "bet_sizing"
 
 
 @dataclass
@@ -450,6 +457,168 @@ class BeliefQueryTool(Tool):
             )
 
 
+class BoardTextureTool(Tool):
+    """Analyze the board texture."""
+
+    @property
+    def name(self) -> ToolName:
+        return ToolName.BOARD_TEXTURE
+
+    @property
+    def description(self) -> str:
+        return "Analyze board texture (dry/wet, paired, connected, flush draws). Helps determine optimal bet sizing and strategy."
+
+    @property
+    def parameters(self) -> dict[str, str]:
+        return {}  # Uses context
+
+    def execute(self, params: dict[str, Any], context: ToolContext) -> ToolResult:
+        if context.board is None or len(context.board) < 3:
+            return ToolResult(
+                tool=self.name,
+                success=False,
+                result=None,
+                error="No board or insufficient cards (need at least flop)"
+            )
+
+        try:
+            texture = analyze_board(context.board)
+
+            # Build detailed formatted output
+            lines = [
+                f"Board: {context.board}",
+                f"Texture: {texture}",
+                f"",
+                f"Characteristics:",
+                f"  - Wetness: {texture.wetness.name.replace('_', ' ')}",
+                f"  - Pairedness: {texture.pairedness.name}",
+                f"  - High card: {texture.high_card.name if texture.high_card else 'N/A'}",
+                f"",
+                f"Draws:",
+                f"  - Flush possible: {'Yes' if texture.flush_possible else 'No'}",
+                f"  - Flush draw: {'Yes' if texture.flush_draw_possible else 'No'}",
+                f"  - Straight possible: {'Yes' if texture.straight_possible else 'No'}",
+                f"  - Straight draw: {'Yes' if texture.straight_draw_possible else 'No'}",
+                f"",
+                f"Strategic implications:",
+            ]
+
+            if texture.is_static:
+                lines.append("  - Static board favors preflop aggressor")
+                lines.append("  - Smaller bet sizes work well")
+            if texture.is_draw_heavy:
+                lines.append("  - Draw-heavy board - need protection bets")
+                lines.append("  - Larger sizing recommended for value")
+            if texture.favors_aggressor:
+                lines.append("  - Board favors preflop aggressor's range")
+
+            formatted = "\n".join(lines)
+
+            return ToolResult(
+                tool=self.name,
+                success=True,
+                result=texture,
+                formatted=formatted
+            )
+        except Exception as e:
+            return ToolResult(
+                tool=self.name,
+                success=False,
+                result=None,
+                error=str(e)
+            )
+
+
+class BetSizingTool(Tool):
+    """Get bet sizing recommendations."""
+
+    @property
+    def name(self) -> ToolName:
+        return ToolName.BET_SIZING
+
+    @property
+    def description(self) -> str:
+        return "Get recommended bet sizing based on hand strength, board texture, and game situation."
+
+    @property
+    def parameters(self) -> dict[str, str]:
+        return {
+            "hand_strength": "Category: 'trash', 'weak_draw', 'strong_draw', 'marginal', 'medium', 'strong', 'very_strong', 'monster'",
+            "is_aggressor": "(optional) Whether we were preflop aggressor (default false)",
+            "bet_previous": "(optional) Whether we bet the previous street (default false)"
+        }
+
+    def execute(self, params: dict[str, Any], context: ToolContext) -> ToolResult:
+        if context.game_state is None:
+            return ToolResult(
+                tool=self.name,
+                success=False,
+                result=None,
+                error="No game state available"
+            )
+
+        # Parse hand strength
+        strength_map = {
+            'trash': HandStrengthCategory.TRASH,
+            'weak_draw': HandStrengthCategory.WEAK_DRAW,
+            'strong_draw': HandStrengthCategory.STRONG_DRAW,
+            'marginal': HandStrengthCategory.MARGINAL,
+            'medium': HandStrengthCategory.MEDIUM,
+            'strong': HandStrengthCategory.STRONG,
+            'very_strong': HandStrengthCategory.VERY_STRONG,
+            'monster': HandStrengthCategory.MONSTER,
+        }
+
+        strength_str = params.get("hand_strength", "medium").lower()
+        hand_strength = strength_map.get(strength_str, HandStrengthCategory.MEDIUM)
+
+        is_aggressor = params.get("is_aggressor", False)
+        bet_previous = params.get("bet_previous", False)
+
+        try:
+            gs = context.game_state
+            pot = gs.pot.total
+            bb = gs.table.big_blind
+
+            sizing = get_postflop_sizing(
+                gs, hand_strength, is_aggressor, bet_previous
+            )
+
+            amount = sizing.get_amount(pot, bb)
+
+            lines = [
+                f"Recommended sizing: {sizing}",
+                f"",
+                f"Bet amount: {amount:.1f} ({sizing.size_pot_fraction*100:.0f}% of pot)",
+                f"Purpose: {sizing.purpose.name}",
+                f"",
+                f"Context:",
+                f"  - Pot: {pot:.0f}",
+                f"  - Street: {gs.street.name}",
+                f"  - Hand strength: {hand_strength.name}",
+            ]
+
+            if sizing.alternative_size:
+                alt_amount = pot * sizing.alternative_size
+                lines.append(f"  - Alternative: {alt_amount:.1f} ({sizing.alternative_size*100:.0f}% of pot)")
+
+            formatted = "\n".join(lines)
+
+            return ToolResult(
+                tool=self.name,
+                success=True,
+                result=sizing,
+                formatted=formatted
+            )
+        except Exception as e:
+            return ToolResult(
+                tool=self.name,
+                success=False,
+                result=None,
+                error=str(e)
+            )
+
+
 class ToolRegistry:
     """
     Registry of available tools.
@@ -469,6 +638,8 @@ class ToolRegistry:
         self.register(EVCalcTool())
         self.register(GTOAdvisorTool())
         self.register(BeliefQueryTool())
+        self.register(BoardTextureTool())
+        self.register(BetSizingTool())
 
     def register(self, tool: Tool) -> None:
         """Register a tool."""

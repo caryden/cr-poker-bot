@@ -27,6 +27,16 @@ from .gto import (
     get_open_range, should_open, should_3bet, should_4bet
 )
 
+from .board_texture import (
+    BoardWetness, BoardPairedness, BoardHighness, BoardTexture, BoardAnalyzer,
+    analyze_board, get_texture_description, is_favorable_cbet_board, get_draw_potential
+)
+
+from .bet_sizing import (
+    HandStrengthCategory, BetPurpose, BetSizing, BetSizingAdvisor,
+    get_preflop_sizing, get_postflop_sizing, get_value_sizing, get_bluff_sizing
+)
+
 __all__ = [
     # Hand evaluation
     'HandRank', 'HandEvaluation', 'HandEvaluator',
@@ -42,4 +52,10 @@ __all__ = [
     # GTO
     'ActionRecommendation', 'GTORecommendation', 'PreflopRange', 'GTOAdvisor',
     'get_open_range', 'should_open', 'should_3bet', 'should_4bet',
+    # Board texture
+    'BoardWetness', 'BoardPairedness', 'BoardHighness', 'BoardTexture', 'BoardAnalyzer',
+    'analyze_board', 'get_texture_description', 'is_favorable_cbet_board', 'get_draw_potential',
+    # Bet sizing
+    'HandStrengthCategory', 'BetPurpose', 'BetSizing', 'BetSizingAdvisor',
+    'get_preflop_sizing', 'get_postflop_sizing', 'get_value_sizing', 'get_bluff_sizing',
 ]
