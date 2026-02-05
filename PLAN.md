@@ -688,84 +688,393 @@ class VillainBeliefs:
         return (best_type, best_proj, best_uncert)
 ```
 
-### Belief Update Rules
+### Belief Revision via Observation-Consistency Mapping
 
-Beliefs are updated using subjective logic **trust discounting** and **consensus operators**:
+Observations don't directly update beliefs. Instead, each observation O_i is mapped to each belief B_j through a **consistency opinion** — an SL opinion about the proposition "O_i is consistent with B_j".
+
+```
+Observation O_i  ──────►  ω_consistency(O_i, B_j)  ──────►  SL Fusion  ──────►  B_j (revised)
+                              │
+                              ├─ High b: O_i strongly supports B_j
+                              ├─ High d: O_i strongly contradicts B_j
+                              └─ High u: O_i is ambiguous w.r.t. B_j
+```
+
+#### The Consistency Opinion
+
+For each (observation, belief) pair, we compute an opinion about their consistency:
 
 ```python
-class BeliefUpdater:
-    """Update beliefs based on observed actions"""
+@dataclass
+class Observation:
+    """A single observed event in the game."""
+    obs_id: str
+    obs_type: str           # "action", "showdown", "timing", etc.
+    action: Optional[Action]
+    revealed_cards: Optional[tuple[Card, Card]]  # If showdown
+    context: GameContext    # Street, position, pot size, etc.
+    timestamp: datetime
 
-    def update_on_action(self, villain: VillainBeliefs,
-                         action: Action, context: GameContext) -> VillainBeliefs:
+
+@dataclass
+class ConsistencyOpinion:
+    """
+    Opinion about: "Observation O is consistent with Belief B"
+
+    This is the bridge between what we see and what we believe.
+    """
+    observation: Observation
+    belief_label: str       # Which belief this relates to
+    opinion: Opinion        # The consistency opinion (b, d, u, a)
+    reasoning: str          # Why this consistency rating
+
+
+class ObservationBeliefMapper:
+    """
+    Map observations to consistency opinions for each belief.
+
+    Key insight: An observation may be:
+    - Strongly consistent (high b) with some beliefs
+    - Strongly inconsistent (high d) with others
+    - Ambiguous (high u) for most
+
+    This is more principled than direct belief updates.
+    """
+
+    def compute_consistency(self, obs: Observation,
+                           belief_label: str,
+                           current_belief: Opinion) -> ConsistencyOpinion:
         """
-        Update beliefs after observing villain's action.
+        Compute how consistent observation is with a belief.
 
-        Uses subjective logic cumulative fusion:
-        ω_new = ω_old ⊕ ω_evidence
+        Returns opinion about "obs is consistent with belief_label"
         """
-        # Generate evidence opinion from action
-        evidence = self._action_to_evidence(action, context)
+        # Dispatch based on observation type
+        if obs.obs_type == "action":
+            return self._action_consistency(obs, belief_label)
+        elif obs.obs_type == "showdown":
+            return self._showdown_consistency(obs, belief_label)
+        elif obs.obs_type == "timing":
+            return self._timing_consistency(obs, belief_label)
+        else:
+            # Unknown observation type - maximally uncertain
+            return ConsistencyOpinion(
+                observation=obs,
+                belief_label=belief_label,
+                opinion=Opinion.vacuous(),
+                reasoning="Unknown observation type"
+            )
 
-        # Fuse with existing belief
-        for belief_name, evidence_opinion in evidence.items():
-            old_opinion = getattr(villain, belief_name)
-            new_opinion = self._cumulative_fusion(old_opinion, evidence_opinion)
-            setattr(villain, belief_name, new_opinion)
-
-        villain.hands_observed += 1
-        return villain
-
-    def _cumulative_fusion(self, ω1: Opinion, ω2: Opinion) -> Opinion:
+    def _action_consistency(self, obs: Observation,
+                           belief_label: str) -> ConsistencyOpinion:
         """
-        Combine two opinions from same source (cumulative evidence).
+        How consistent is this action with the belief?
+        """
+        action = obs.action
+        ctx = obs.context
 
+        # Example: Villain 3-bets preflop
+        if action.action_type == ActionType.RAISE and ctx.street == Street.PREFLOP:
+            if ctx.facing_raise:  # This is a 3-bet
+
+                if belief_label == "is_TAG":
+                    # 3-betting is consistent with TAG play
+                    return ConsistencyOpinion(
+                        observation=obs,
+                        belief_label=belief_label,
+                        opinion=Opinion(b=0.6, d=0.1, u=0.3, a=0.25),
+                        reasoning="3-betting is consistent with TAG style"
+                    )
+
+                elif belief_label == "is_passive":
+                    # 3-betting is inconsistent with passive play
+                    return ConsistencyOpinion(
+                        observation=obs,
+                        belief_label=belief_label,
+                        opinion=Opinion(b=0.05, d=0.7, u=0.25, a=0.3),
+                        reasoning="3-betting contradicts passive style"
+                    )
+
+                elif belief_label == "is_LAG":
+                    # 3-betting is somewhat consistent with LAG
+                    return ConsistencyOpinion(
+                        observation=obs,
+                        belief_label=belief_label,
+                        opinion=Opinion(b=0.5, d=0.15, u=0.35, a=0.15),
+                        reasoning="3-betting is consistent with LAG"
+                    )
+
+        # Example: Villain folds to c-bet
+        if action.action_type == ActionType.FOLD and ctx.facing_cbet:
+
+            if belief_label == "folds_to_cbet":
+                # Direct evidence FOR this belief
+                return ConsistencyOpinion(
+                    observation=obs,
+                    belief_label=belief_label,
+                    opinion=Opinion(b=0.8, d=0.05, u=0.15, a=0.45),
+                    reasoning="Folding to c-bet directly supports this belief"
+                )
+
+            elif belief_label == "is_calling_station":
+                # Folding contradicts calling station
+                return ConsistencyOpinion(
+                    observation=obs,
+                    belief_label=belief_label,
+                    opinion=Opinion(b=0.05, d=0.75, u=0.20, a=0.20),
+                    reasoning="Folding contradicts calling station tendency"
+                )
+
+        # Default: observation is ambiguous for this belief
+        return ConsistencyOpinion(
+            observation=obs,
+            belief_label=belief_label,
+            opinion=Opinion(b=0.1, d=0.1, u=0.8, a=0.5),
+            reasoning="Observation is ambiguous for this belief"
+        )
+
+    def _showdown_consistency(self, obs: Observation,
+                              belief_label: str) -> ConsistencyOpinion:
+        """
+        Showdown reveals actual hand - strong evidence.
+
+        If villain shows 72o after 3-betting, that's STRONG disbelief
+        for "is_TAG" and STRONG belief for "is_maniac".
+        """
+        revealed = obs.revealed_cards
+        ctx = obs.context
+
+        # Get hand strength category
+        hand_strength = self._categorize_hand(revealed)
+
+        if belief_label == "is_TAG":
+            if ctx.villain_3bet and hand_strength == "trash":
+                # 3-bet with trash → strongly inconsistent with TAG
+                return ConsistencyOpinion(
+                    observation=obs,
+                    belief_label=belief_label,
+                    opinion=Opinion(b=0.02, d=0.88, u=0.10, a=0.25),
+                    reasoning="3-betting trash hand strongly contradicts TAG"
+                )
+            elif ctx.villain_3bet and hand_strength == "premium":
+                # 3-bet with premium → consistent with TAG
+                return ConsistencyOpinion(
+                    observation=obs,
+                    belief_label=belief_label,
+                    opinion=Opinion(b=0.75, d=0.05, u=0.20, a=0.25),
+                    reasoning="3-betting premium hand supports TAG"
+                )
+
+        # ... similar logic for other beliefs
+
+        return ConsistencyOpinion(
+            observation=obs,
+            belief_label=belief_label,
+            opinion=Opinion.vacuous(),
+            reasoning="No specific consistency inference"
+        )
+```
+
+#### SL Algebra for Belief Revision
+
+Once we have consistency opinions, we use SL operators to revise beliefs:
+
+```python
+class SLBeliefReviser:
+    """
+    Revise beliefs using subjective logic algebra.
+
+    Key operators:
+    - Cumulative Fusion (⊕): Combine evidence from same source over time
+    - Averaging Fusion (⊙): Combine independent opinions
+    - Deduction (⊛): Derive belief from consistency + prior
+    """
+
+    def revise_belief(self,
+                      current_belief: Opinion,
+                      consistency: ConsistencyOpinion) -> Opinion:
+        """
+        Revise a belief based on observation consistency.
+
+        Uses SL deduction: If we believe "O is consistent with B",
+        and we observe O, what should we believe about B?
+
+        ω_B_new = ω_B_old ⊕ deduce(ω_consistency)
+        """
+        # Convert consistency opinion to evidence about the belief
+        evidence = self._consistency_to_evidence(consistency.opinion)
+
+        # Cumulative fusion with existing belief
+        revised = self.cumulative_fusion(current_belief, evidence)
+
+        return revised
+
+    def _consistency_to_evidence(self, consistency: Opinion) -> Opinion:
+        """
+        Convert "O is consistent with B" opinion to evidence about B.
+
+        High b (consistent) → evidence FOR B
+        High d (inconsistent) → evidence AGAINST B
+        High u (ambiguous) → weak evidence
+        """
+        # The consistency opinion's belief becomes evidence for the belief
+        # The consistency opinion's disbelief becomes evidence against
+        # Scale by (1 - uncertainty) to weight by confidence
+
+        weight = 1 - consistency.uncertainty
+
+        return Opinion(
+            belief=consistency.belief * weight,
+            disbelief=consistency.disbelief * weight,
+            uncertainty=1 - weight,  # Remaining goes to uncertainty
+            base_rate=consistency.base_rate
+        )
+
+    def cumulative_fusion(self, ω1: Opinion, ω2: Opinion) -> Opinion:
+        """
+        Cumulative fusion: ω1 ⊕ ω2
+
+        Combines evidence from same source over time.
         As evidence accumulates, uncertainty decreases.
         """
-        # Cumulative fusion formula from subjective logic
         k = ω1.uncertainty + ω2.uncertainty - ω1.uncertainty * ω2.uncertainty
 
         if k == 0:
-            return ω1  # Both dogmatic, no change
+            return ω1  # Both dogmatic
 
         b = (ω1.belief * ω2.uncertainty + ω2.belief * ω1.uncertainty) / k
         d = (ω1.disbelief * ω2.uncertainty + ω2.disbelief * ω1.uncertainty) / k
         u = (ω1.uncertainty * ω2.uncertainty) / k
-        a = (ω1.base_rate + ω2.base_rate) / 2  # Average base rates
+        a = (ω1.base_rate + ω2.base_rate) / 2
 
         return Opinion(b, d, u, a)
 
-    def _action_to_evidence(self, action: Action,
-                            context: GameContext) -> dict[str, Opinion]:
+    def trust_discount(self, ω_belief: Opinion,
+                       ω_trust: Opinion) -> Opinion:
         """
-        Convert observed action to evidence opinions.
+        Trust discounting: Adjust belief by trust in source.
 
-        Each action provides weak evidence about various beliefs.
+        If we don't fully trust the evidence source, discount it.
         """
-        evidence = {}
+        # Discounted belief is scaled by trust
+        trust_factor = ω_trust.belief + ω_trust.base_rate * ω_trust.uncertainty
 
-        # Example: Large raise on river
-        if action.action_type == ActionType.RAISE and context.street == Street.RIVER:
-            if action.amount > context.pot:
-                # Over-pot raise: evidence of polarized play (strong or bluff)
-                evidence['ω_bluffs_river'] = Opinion(
-                    belief=0.15,      # Slight evidence of bluffing tendency
-                    disbelief=0.05,
-                    uncertainty=0.80, # Single action is weak evidence
-                    base_rate=0.25
-                )
+        return Opinion(
+            belief=ω_belief.belief * trust_factor,
+            disbelief=ω_belief.disbelief * trust_factor,
+            uncertainty=1 - trust_factor + ω_belief.uncertainty * trust_factor,
+            base_rate=ω_belief.base_rate
+        )
 
-        # Example: Folding to c-bet
-        if action.action_type == ActionType.FOLD and context.facing_cbet:
-            evidence['ω_folds_to_cbet'] = Opinion(
-                belief=0.2,
-                disbelief=0.0,
-                uncertainty=0.8,
-                base_rate=0.45  # Average fold-to-cbet is ~45%
-            )
 
-        return evidence
+class BeliefRevisionEngine:
+    """
+    Full belief revision pipeline.
+
+    Observation → Consistency Opinions → SL Fusion → Revised Beliefs
+    """
+
+    def __init__(self):
+        self.mapper = ObservationBeliefMapper()
+        self.reviser = SLBeliefReviser()
+
+    def process_observation(self, obs: Observation,
+                           beliefs: VillainBeliefs) -> VillainBeliefs:
+        """
+        Process a single observation and revise all relevant beliefs.
+        """
+        # Get all belief labels we track
+        belief_labels = beliefs.get_all_belief_labels()
+
+        for label in belief_labels:
+            current = beliefs.get_belief(label)
+
+            # Compute consistency of observation with this belief
+            consistency = self.mapper.compute_consistency(obs, label, current)
+
+            # Only revise if consistency is informative (not vacuous)
+            if consistency.opinion.uncertainty < 0.9:
+                revised = self.reviser.revise_belief(current, consistency)
+                beliefs.set_belief(label, revised)
+
+                # Log the revision for transparency
+                self._log_revision(obs, label, current, consistency, revised)
+
+        beliefs.observations_processed += 1
+        return beliefs
+
+    def _log_revision(self, obs: Observation, label: str,
+                      old: Opinion, consistency: ConsistencyOpinion,
+                      new: Opinion) -> None:
+        """Log belief revision for debugging and transparency."""
+        print(f"  {label}: {old.to_tuple_str()} → {new.to_tuple_str()}")
+        print(f"    via consistency: {consistency.opinion.to_tuple_str()}")
+        print(f"    reasoning: {consistency.reasoning}")
 ```
+
+#### Example: Observation-Belief Revision Flow
+
+```python
+# Observation: Villain 3-bets preflop, later shows 72o at showdown
+
+obs_action = Observation(
+    obs_type="action",
+    action=Action(ActionType.RAISE, amount=30),  # 3-bet
+    context=GameContext(street=Street.PREFLOP, facing_raise=True)
+)
+
+obs_showdown = Observation(
+    obs_type="showdown",
+    revealed_cards=(Card("7", "h"), Card("2", "s")),
+    context=GameContext(villain_3bet=True)
+)
+
+# Initial beliefs
+beliefs = VillainBeliefs(
+    is_TAG=Opinion(b=0.3, d=0.2, u=0.5, a=0.25),      # Uncertain
+    is_LAG=Opinion(b=0.2, d=0.3, u=0.5, a=0.15),      # Uncertain
+    is_maniac=Opinion(b=0.1, d=0.4, u=0.5, a=0.05),   # Lean no
+)
+
+# Process 3-bet action
+engine.process_observation(obs_action, beliefs)
+# is_TAG: consistency (b=0.6, d=0.1, u=0.3) → "3-bet supports TAG"
+# is_LAG: consistency (b=0.5, d=0.15, u=0.35) → "3-bet supports LAG"
+# is_maniac: consistency (b=0.4, d=0.2, u=0.4) → "3-bet somewhat supports maniac"
+
+# After action observation:
+# is_TAG: (b=0.3, d=0.2, u=0.5) → (b=0.42, d=0.17, u=0.41)  # More likely TAG
+# is_LAG: (b=0.2, d=0.3, u=0.5) → (b=0.33, d=0.24, u=0.43)  # More likely LAG
+
+# Process showdown - villain had 72o!
+engine.process_observation(obs_showdown, beliefs)
+# is_TAG: consistency (b=0.02, d=0.88, u=0.10) → "72o strongly contradicts TAG"
+# is_maniac: consistency (b=0.85, d=0.05, u=0.10) → "72o strongly supports maniac"
+
+# After showdown observation:
+# is_TAG: (b=0.42, d=0.17, u=0.41) → (b=0.15, d=0.58, u=0.27)  # Now high disbelief!
+# is_maniac: (b=0.25, d=0.32, u=0.43) → (b=0.52, d=0.18, u=0.30) # Now likely maniac
+
+# Final belief state:
+# is_TAG:    (b=0.15, d=0.58, u=0.27) → "Villain is NOT TAG" (high d, low u)
+# is_maniac: (b=0.52, d=0.18, u=0.30) → "Villain likely IS maniac" (high b)
+```
+
+#### Consistency Matrix
+
+For common observations, we define expected consistency with each belief type:
+
+| Observation | is_TAG | is_LAG | is_Nit | is_Fish | is_Maniac |
+|-------------|--------|--------|--------|---------|-----------|
+| 3-bet preflop | b=0.6 | b=0.5 | d=0.6 | u=0.8 | b=0.4 |
+| Fold to c-bet | u=0.6 | d=0.4 | b=0.5 | d=0.6 | d=0.5 |
+| Overbet river | b=0.3 | b=0.5 | d=0.7 | u=0.7 | b=0.7 |
+| Call 3 streets | d=0.3 | b=0.3 | d=0.6 | b=0.8 | b=0.4 |
+| Check-raise bluff | b=0.4 | b=0.6 | d=0.8 | d=0.7 | b=0.7 |
+| Show trash hand | d=0.8 | b=0.4 | d=0.9 | b=0.6 | b=0.85 |
+| Show premium | b=0.5 | u=0.6 | b=0.7 | u=0.7 | d=0.4 |
+
+This matrix encodes domain knowledge about poker player types.
 
 ### Belief-to-Strategy Translation
 
