@@ -436,3 +436,8 @@ def should_open(hand: HoleCards, position: Position) -> GTORecommendation:
 def should_3bet(hand: HoleCards, hero_pos: Position, villain_pos: Position) -> GTORecommendation:
     """Check if hand should 3-bet."""
     return _advisor.should_3bet(hand, hero_pos, villain_pos)
+
+
+def should_4bet(hand: HoleCards, vs_3bet_pos: Position) -> GTORecommendation:
+    """Check if hand should 4-bet."""
+    return _advisor.should_4bet(hand, vs_3bet_pos)

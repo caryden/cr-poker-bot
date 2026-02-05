@@ -24,7 +24,7 @@ from .pot_odds import (
 
 from .gto import (
     ActionRecommendation, GTORecommendation, PreflopRange, GTOAdvisor,
-    get_open_range, should_open, should_3bet
+    get_open_range, should_open, should_3bet, should_4bet
 )
 
 __all__ = [
@@ -41,5 +41,5 @@ __all__ = [
     'required_fold_equity',
     # GTO
     'ActionRecommendation', 'GTORecommendation', 'PreflopRange', 'GTOAdvisor',
-    'get_open_range', 'should_open', 'should_3bet',
+    'get_open_range', 'should_open', 'should_3bet', 'should_4bet',
 ]
