@@ -31,6 +31,14 @@ from .beliefs import (
     create_default_villain_beliefs
 )
 
+from .memory import (
+    HandSummary, OpponentStats, OpponentMemory, TableMemory
+)
+
+from .persistence import (
+    MemoryStore, BeliefStore, PersistentMemoryManager
+)
+
 __all__ = [
     # Primitives
     'Suit', 'Rank', 'Card', 'HoleCards',
@@ -50,4 +58,8 @@ __all__ = [
     'ObservationBeliefMapper', 'SLBeliefReviser',
     'VillainBeliefs', 'BeliefState', 'BeliefRevisionEngine',
     'create_default_villain_beliefs',
+    # Memory
+    'HandSummary', 'OpponentStats', 'OpponentMemory', 'TableMemory',
+    # Persistence
+    'MemoryStore', 'BeliefStore', 'PersistentMemoryManager',
 ]

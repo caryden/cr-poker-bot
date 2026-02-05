@@ -158,6 +158,38 @@ class Opinion:
 
         return cls(b, d, u, base_rate)
 
+    @classmethod
+    def from_frequency(cls, successes: int, failures: int,
+                       base_rate: float = 0.5) -> Opinion:
+        """
+        Create opinion from observed frequencies.
+
+        Uses the standard mapping from beta distribution:
+        b = successes / (total + W)
+        d = failures / (total + W)
+        u = W / (total + W)
+
+        Where W is the weight of prior (default 2 for non-informative).
+
+        Args:
+            successes: Number of positive observations
+            failures: Number of negative observations
+            base_rate: Prior probability
+
+        Returns:
+            Opinion with uncertainty inversely proportional to sample size
+        """
+        total = successes + failures
+        if total == 0:
+            return cls.vacuous(base_rate)
+
+        W = 2  # Weight of prior (non-informative)
+        b = successes / (total + W)
+        d = failures / (total + W)
+        u = W / (total + W)
+
+        return cls(b, d, u, base_rate)
+
     # ==================== SL Operators ====================
 
     def cumulative_fusion(self, other: Opinion) -> Opinion:
