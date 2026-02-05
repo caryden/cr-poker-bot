@@ -358,11 +358,22 @@ class HandRunner:
                 if villain:
                     action = villain.decide(game)
                 else:
-                    # Default to check/fold
-                    action = Action.check() if game.to_call == 0 else Action.fold()
+                    # Default to check/fold for unregistered villains
+                    player = game.players[next_player]
+                    to_call_for_player = max(0, game.current_bet - player.bet_this_street)
+                    action = Action.check() if to_call_for_player == 0 else Action.fold()
 
-            # Track aggression
-            if action.action_type in (ActionType.BET, ActionType.RAISE):
+            # Track aggression (BET, RAISE, or ALL_IN that raises)
+            player = game.players[next_player]
+            is_aggressive = action.action_type in (ActionType.BET, ActionType.RAISE)
+            # ALL_IN is aggressive if it raises the current bet
+            if action.action_type == ActionType.ALL_IN:
+                # After apply_action, check if player's bet exceeds previous current_bet
+                # We need to check before apply, so compute what bet would be
+                potential_bet = player.bet_this_street + player.stack  # all-in amount
+                is_aggressive = potential_bet > game.current_bet
+
+            if is_aggressive:
                 last_aggressor = next_player
                 # Others need to respond to raise
                 acted_this_street = {next_player}
@@ -377,6 +388,9 @@ class HandRunner:
             if next_player != self.hero.player_id and self.memory_manager:
                 self._record_villain_action(next_player, action, game)
 
+        # Distribute pot to winner(s)
+        self._distribute_pot(game)
+
         # Calculate result
         hero_profit = (game.hero.stack - initial_stack) / self.engine.big_blind
         went_to_showdown = game.street == Street.RIVER and len(self.engine.get_active_players(game)) > 1
@@ -390,6 +404,45 @@ class HandRunner:
             actions_taken=actions_taken,
             final_pot=game.pot.total
         )
+
+    def _distribute_pot(self, game: GameState) -> None:
+        """Distribute pot to winner(s) at end of hand."""
+        from ..tools.hand_eval import evaluate_hand
+
+        # Get players still in hand (not folded)
+        in_hand = [
+            p for p in game.players.values()
+            if p.status in (PlayerStatus.ACTIVE, PlayerStatus.ALL_IN)
+        ]
+
+        if not in_hand:
+            return
+
+        pot_amount = game.pot.total
+
+        if len(in_hand) == 1:
+            # Everyone else folded - award pot to remaining player
+            winner = in_hand[0]
+            winner.stack += pot_amount
+        else:
+            # Showdown - compare hands
+            best_rank = None
+            winners = []
+
+            for player in in_hand:
+                if player.hole_cards and game.board:
+                    hand_rank = evaluate_hand(player.hole_cards, game.board)
+                    if best_rank is None or hand_rank > best_rank:
+                        best_rank = hand_rank
+                        winners = [player]
+                    elif hand_rank == best_rank:
+                        winners.append(player)
+
+            # Split pot among winners
+            if winners:
+                share = pot_amount / len(winners)
+                for winner in winners:
+                    winner.stack += share
 
     def _get_next_to_act(
         self, game: GameState, acted_this_street: set[str], last_aggressor: Optional[str]

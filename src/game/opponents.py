@@ -49,27 +49,11 @@ class RandomPlayer:
     def decide(self, game_state: GameState) -> Action:
         """Make a random legal decision."""
         legal_actions = game_state.get_legal_actions()
-        action_type = random.choice(legal_actions)
-
-        if action_type == ActionType.FOLD:
+        if not legal_actions:
             return Action.fold()
-        elif action_type == ActionType.CHECK:
-            return Action.check()
-        elif action_type == ActionType.CALL:
-            return Action.call(game_state.to_call)
-        elif action_type in (ActionType.BET, ActionType.RAISE):
-            # Random bet size between min and 2x pot
-            min_raise = game_state.min_raise
-            max_raise = min(game_state.pot.total * 2, game_state.hero.stack)
-            amount = random.uniform(min_raise, max(min_raise, max_raise))
-            if action_type == ActionType.BET:
-                return Action.bet(amount)
-            else:
-                return Action.raise_to(amount)
-        elif action_type == ActionType.ALL_IN:
-            return Action.all_in(game_state.hero.stack)
 
-        return Action.check()
+        # get_legal_actions returns Action objects, just pick one randomly
+        return random.choice(legal_actions)
 
 
 class CallingStation:
