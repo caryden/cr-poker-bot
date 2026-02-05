@@ -343,6 +343,217 @@ Traditional probabilistic models collapse uncertainty into point estimates. In p
 
 is critical. **Subjective logic** explicitly represents this uncertainty.
 
+### The Power of Disbelief: Surfacing Negative Knowledge
+
+A key insight from Test-time Recursive Thinking ([arXiv:2602.03094](https://arxiv.org/abs/2602.03094)) is that **negative constraints ("don't do X") are more valuable than positive guidance ("do Y")**. This maps directly to subjective logic's disbelief component.
+
+The key is not to mathematically weight disbelief higher, but to **surface strong disbeliefs prominently** in the belief state so the LLM can reason about them explicitly.
+
+#### Why Negative Knowledge is More Actionable
+
+| Positive Knowledge (Belief) | Negative Knowledge (Disbelief) | Why Disbelief is Clearer |
+|----------------------------|-------------------------------|--------------------------|
+| "Villain sometimes bluffs rivers" | "Villain NEVER bluffs rivers" | Eliminates a possibility entirely |
+| "Villain might fold to 3-bets" | "Villain NEVER folds to 3-bets" | Removes fold equity from calculation |
+| "Villain could slowplay" | "Villain DOESN'T slowplay" | Trust their checks as weakness |
+| "Villain may be aggressive" | "Villain is NOT aggressive" | Expect passive play |
+
+**Positive knowledge** suggests probabilistic adjustments.
+**Negative knowledge** eliminates possibilities — making decisions simpler.
+
+#### Surfacing High-Disbelief Opinions
+
+Strong disbeliefs should be **explicitly surfaced** in the prompt as "DON'T" rules:
+
+```python
+@dataclass
+class Opinion:
+    belief: float
+    disbelief: float
+    uncertainty: float
+    base_rate: float
+
+    def has_strong_disbelief(self, threshold: float = 0.6) -> bool:
+        """Is disbelief strong enough to surface as a negative constraint?"""
+        return self.disbelief >= threshold and self.uncertainty < 0.4
+
+    def to_natural_language(self, proposition: str) -> str:
+        """
+        Convert opinion to natural language, highlighting disbelief.
+
+        Strong disbelief is surfaced as "DOES NOT" / "NEVER" statements.
+        """
+        if self.has_strong_disbelief():
+            # Surface as explicit negative constraint
+            confidence = 1 - self.uncertainty
+            return f"⛔ STRONG NEGATIVE: Villain DOES NOT {proposition} " \
+                   f"(d={self.disbelief:.0%}, confidence={confidence:.0%})"
+
+        elif self.belief > self.disbelief:
+            return f"Villain tends to {proposition} " \
+                   f"(b={self.belief:.0%}, u={self.uncertainty:.0%})"
+
+        else:
+            return f"Uncertain whether villain {proposition} " \
+                   f"(b={self.belief:.0%}, d={self.disbelief:.0%}, u={self.uncertainty:.0%})"
+
+
+class BeliefStateSummarizer:
+    """
+    Summarize beliefs for LLM prompt, surfacing negative knowledge prominently.
+
+    Key insight from TRT: "Don't do" rules should be presented FIRST
+    and CLEARLY so the LLM treats them as constraints.
+    """
+
+    def summarize_for_prompt(self, beliefs: VillainBeliefs) -> str:
+        """
+        Generate belief summary with negative constraints surfaced first.
+        """
+        lines = []
+
+        # SECTION 1: Strong Negative Constraints (High Disbelief)
+        # These are presented first and prominently
+        negatives = self._extract_strong_negatives(beliefs)
+        if negatives:
+            lines.append("=== NEGATIVE CONSTRAINTS (High Confidence) ===")
+            lines.append("These are things villain DOES NOT do:")
+            for neg in negatives:
+                lines.append(f"  ⛔ {neg}")
+            lines.append("")
+
+        # SECTION 2: Positive Tendencies (High Belief)
+        positives = self._extract_strong_positives(beliefs)
+        if positives:
+            lines.append("=== POSITIVE TENDENCIES ===")
+            lines.append("Things villain tends to do:")
+            for pos in positives:
+                lines.append(f"  ✓ {pos}")
+            lines.append("")
+
+        # SECTION 3: Uncertain / Insufficient Data
+        uncertain = self._extract_uncertain(beliefs)
+        if uncertain:
+            lines.append("=== UNCERTAIN (Insufficient Data) ===")
+            for unc in uncertain:
+                lines.append(f"  ? {unc}")
+
+        return "\n".join(lines)
+
+    def _extract_strong_negatives(self, beliefs: VillainBeliefs) -> list[str]:
+        """Extract high-disbelief opinions as negative statements."""
+        negatives = []
+
+        if beliefs.ω_folds_to_cbet.has_strong_disbelief():
+            negatives.append("Does NOT fold to c-bets → don't bluff c-bet")
+
+        if beliefs.ω_folds_to_3bet.has_strong_disbelief():
+            negatives.append("Does NOT fold to 3-bets → only 3-bet for value")
+
+        if beliefs.ω_bluffs_river.has_strong_disbelief():
+            negatives.append("Does NOT bluff rivers → call with any showdown value")
+
+        if beliefs.ω_slowplays_monsters.has_strong_disbelief():
+            negatives.append("Does NOT slowplay big hands → trust their checks")
+
+        if beliefs.ω_folds_to_river_bet.has_strong_disbelief():
+            negatives.append("Does NOT fold rivers → never bluff river")
+
+        return negatives
+```
+
+#### Example Prompt with Surfaced Disbeliefs
+
+```
+=== VILLAIN BELIEFS: player_42 (150 hands) ===
+
+=== NEGATIVE CONSTRAINTS (High Confidence) ===
+These are things villain DOES NOT do:
+  ⛔ Does NOT fold to c-bets → don't bluff c-bet
+  ⛔ Does NOT bluff rivers → call with any showdown value
+
+=== POSITIVE TENDENCIES ===
+Things villain tends to do:
+  ✓ Tends to call too much preflop (VPIP 45%)
+  ✓ Tends to be passive postflop (AF 0.8)
+
+=== UNCERTAIN (Insufficient Data) ===
+  ? Fold to turn barrels: insufficient data (12 samples)
+  ? Check-raise frequency: insufficient data (5 samples)
+```
+
+The LLM sees the negative constraints **first** and **prominently marked**, priming it to treat them as hard rules rather than soft adjustments.
+
+#### TRT Integration: Negative Constraints in Verification
+
+When TRT verifies candidate actions, strong disbeliefs surface as explicit warnings:
+
+```python
+class TRTVerifierWithSurfacedConstraints:
+    """
+    TRT verifier that surfaces disbelief-based constraints in reasoning.
+    """
+
+    def verify_with_constraints(self, action: Action, state: GameState,
+                                 beliefs: VillainBeliefs) -> VerificationResult:
+        """
+        Verify action, surfacing any constraint violations clearly.
+        """
+        warnings = []
+        violations = []
+
+        # Check each high-disbelief opinion
+        if action.action_type == ActionType.BET and state.street == Street.RIVER:
+            if beliefs.ω_folds_to_river_bet.has_strong_disbelief():
+                if not self._has_value(state):  # Bluffing
+                    violations.append(
+                        "⛔ CONSTRAINT VIOLATION: Betting river as bluff, "
+                        "but villain DOES NOT fold rivers"
+                    )
+
+        if action.action_type == ActionType.FOLD and state.street == Street.RIVER:
+            if beliefs.ω_bluffs_river.has_strong_disbelief():
+                if self._has_showdown_value(state):
+                    violations.append(
+                        "⛔ CONSTRAINT VIOLATION: Folding with showdown value, "
+                        "but villain DOES NOT bluff rivers"
+                    )
+
+        return VerificationResult(
+            violations=violations,  # Surfaced prominently
+            warnings=warnings,
+            ev_estimate=self._calc_ev(action, state, beliefs)
+        )
+```
+
+#### Practical Example
+
+```python
+# Situation: River, hero has middle pair, villain bets
+
+beliefs = VillainBeliefs(
+    ω_bluffs_river=Opinion(
+        belief=0.08,      # Rarely bluffs
+        disbelief=0.72,   # Strong: does NOT bluff
+        uncertainty=0.20,
+        base_rate=0.25
+    )
+)
+
+# Surfaced in prompt:
+# "⛔ Does NOT bluff rivers → call with any showdown value"
+
+# When hero considers folding, TRT verification returns:
+# "⛔ CONSTRAINT VIOLATION: Folding with showdown value,
+#    but villain DOES NOT bluff rivers"
+
+# The LLM sees this clearly and reasons:
+# "Given the strong negative constraint that villain doesn't bluff,
+#  folding middle pair violates this constraint. I should call."
+```
+
+This approach keeps the subjective logic math unchanged but ensures **strong disbeliefs are surfaced prominently** so the LLM can reason about them as "don't do" constraints.
+
 ### Opinion Representation
 
 A **subjective logic opinion** about proposition X is a tuple ω = (b, d, u, a) where:
