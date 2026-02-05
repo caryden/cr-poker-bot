@@ -98,6 +98,20 @@ Based on research into state-of-the-art agents (Libratus, Pluribus, DeepStack, R
 | **Disbelief (d)** | Degree of belief that proposition is false |
 | **Uncertainty (u)** | Degree of uncommitted belief (lack of evidence) |
 | **Base Rate (a)** | Prior probability when uncertainty is maximal |
+| **Projected Probability** | P = b + a·u - probability accounting for uncertainty |
+| **Vacuous Opinion** | Maximum uncertainty (0, 0, 1, a) - no evidence |
+| **Dogmatic Opinion** | Zero uncertainty - complete certainty |
+
+### Test-Time Reasoning Terms
+| Term | Definition |
+|------|------------|
+| **TRT** | Test-time Recursive Thinking - iterative self-improvement at inference |
+| **Rollout** | A candidate solution path explored during reasoning |
+| **Strategy-Conditioned Generation** | Generating solutions based on specific strategic approach |
+| **Self-Verification** | Validating correctness without external ground truth |
+| **Back-Verification** | Working backward from answer to check validity |
+| **Accumulated Knowledge** | Information gathered across reasoning iterations |
+| **Convergence** | When further iterations no longer improve the solution |
 | **Vacuous Opinion** | Maximum uncertainty (0, 0, 1, a) - no evidence |
 | **Dogmatic Opinion** | Zero uncertainty - complete certainty |
 | **Projected Probability** | P = b + a·u - probability accounting for uncertainty |
@@ -524,6 +538,425 @@ def blend_strategies(gto_action: Action, exploit_action: Action,
 
 ---
 
+## Test-Time Recursive Thinking (TRT) for Poker Decisions
+
+Inspired by [Test-time Recursive Thinking (arXiv:2602.03094)](https://arxiv.org/abs/2602.03094), the agent employs **iterative self-improvement at inference time** rather than single-pass reasoning. This is critical for poker where:
+
+1. Decisions have high EV variance - one mistake can cost the entire stack
+2. Multiple viable strategies exist (GTO vs exploit)
+3. Self-verification against GTO baseline is possible without external feedback
+4. Accumulated game knowledge should inform reasoning
+
+### TRT-Enhanced Decision Loop
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    TRT-ENHANCED POKER REASONING                              │
+│                                                                              │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │                     RECURSIVE THINKING LOOP                           │   │
+│  │                                                                       │   │
+│  │   ┌─────────┐    ┌─────────────┐    ┌─────────────┐    ┌──────────┐ │   │
+│  │   │ Initial │───►│  Strategy   │───►│   Verify    │───►│ Refined  │ │   │
+│  │   │ Analysis│    │  Rollouts   │    │  Candidate  │    │ Decision │ │   │
+│  │   └─────────┘    └─────────────┘    └─────────────┘    └──────────┘ │   │
+│  │        │               │                   │                 │       │   │
+│  │        │               ▼                   ▼                 │       │   │
+│  │        │        ┌─────────────┐    ┌─────────────┐          │       │   │
+│  │        │        │ GTO Rollout │    │ GTO Check   │          │       │   │
+│  │        │        │ Exploit Rol │    │ EV Compare  │          │       │   │
+│  │        │        │ Defensive R │    │ Back-verify │          │       │   │
+│  │        │        └─────────────┘    └─────────────┘          │       │   │
+│  │        │                                                     │       │   │
+│  │        └──────── ITERATE IF NOT CONVERGED ◄──────────────────┘       │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│                                    │                                         │
+│                                    ▼                                         │
+│  ┌──────────────────────────────────────────────────────────────────────┐   │
+│  │                    ACCUMULATED KNOWLEDGE BASE                         │   │
+│  │   • Successful exploitation patterns vs opponent types                │   │
+│  │   • Situations where GTO outperformed exploitation (and vice versa)   │   │
+│  │   • Back-verification failures → adjust future reasoning              │   │
+│  └──────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Strategy-Conditioned Rollouts
+
+Instead of generating a single action, TRT explores multiple strategic approaches in parallel:
+
+```python
+class StrategyRollout:
+    """A candidate decision path under a specific strategic approach"""
+
+    strategy: str           # "GTO", "Exploit", "Defensive", "Trapping"
+    action: Action          # The action this strategy recommends
+    reasoning: str          # LLM's reasoning for this action
+    ev_estimate: float      # Estimated expected value
+    confidence: float       # Confidence in this estimate
+    verification: dict      # Self-verification results
+
+
+class TRTDecisionMaker:
+    """
+    Test-time Recursive Thinking for poker decisions.
+
+    Key insight from TRT paper: LLMs can self-improve at inference time
+    by conditioning on rollout-specific strategies and self-generated
+    verification signals.
+    """
+
+    STRATEGIES = {
+        "GTO": "Play game-theory optimal, unexploitable baseline",
+        "Exploit": "Deviate from GTO to exploit opponent tendencies",
+        "Defensive": "Minimize losses against unknown/skilled opponents",
+        "Trapping": "Slowplay strong hands to induce bluffs",
+        "Bluff-Heavy": "Increase bluff frequency against tight opponents",
+    }
+
+    def __init__(self, agent: "PokerAgent", max_iterations: int = 3):
+        self.agent = agent
+        self.max_iterations = max_iterations
+        self.knowledge_base = AccumulatedKnowledge()
+
+    async def decide(self, game_state: GameState,
+                     beliefs: TableBeliefs) -> Action:
+        """
+        TRT-enhanced decision making with recursive refinement.
+        """
+        iteration = 0
+        best_rollout = None
+
+        while iteration < self.max_iterations:
+            # 1. Generate strategy-conditioned rollouts
+            rollouts = await self._generate_rollouts(game_state, beliefs)
+
+            # 2. Self-verify each rollout
+            verified_rollouts = await self._verify_rollouts(
+                rollouts, game_state, beliefs
+            )
+
+            # 3. Select best rollout based on verification
+            current_best = self._select_best_rollout(verified_rollouts)
+
+            # 4. Check for convergence
+            if self._has_converged(best_rollout, current_best):
+                break
+
+            best_rollout = current_best
+            iteration += 1
+
+            # 5. Accumulate knowledge for next iteration
+            self._accumulate_knowledge(verified_rollouts)
+
+        # 6. Update knowledge base with final decision
+        self.knowledge_base.record_decision(game_state, best_rollout)
+
+        return best_rollout.action
+
+    async def _generate_rollouts(self, game_state: GameState,
+                                  beliefs: TableBeliefs) -> list[StrategyRollout]:
+        """
+        Generate candidate actions under different strategies.
+
+        Each strategy conditions the LLM's reasoning differently.
+        """
+        rollouts = []
+
+        for strategy_name, strategy_desc in self.STRATEGIES.items():
+            # Skip strategies that don't apply
+            if not self._strategy_applies(strategy_name, game_state, beliefs):
+                continue
+
+            # Generate rollout with strategy-conditioned prompt
+            rollout = await self.agent.generate_strategy_rollout(
+                game_state=game_state,
+                beliefs=beliefs,
+                strategy=strategy_name,
+                strategy_description=strategy_desc,
+                accumulated_knowledge=self.knowledge_base.get_relevant(
+                    game_state, strategy_name
+                )
+            )
+            rollouts.append(rollout)
+
+        return rollouts
+
+    async def _verify_rollouts(self, rollouts: list[StrategyRollout],
+                                game_state: GameState,
+                                beliefs: TableBeliefs) -> list[StrategyRollout]:
+        """
+        Self-verify each rollout without external feedback.
+
+        Verification signals (inspired by TRT):
+        1. GTO consistency - does action align with GTO baseline?
+        2. EV estimation - calculate expected value vs opponent range
+        3. Back-verification - if we take this action, what happens next?
+        4. Comparative evaluation - how does this compare to alternatives?
+        """
+        for rollout in rollouts:
+            verification = {}
+
+            # 1. GTO Consistency Check
+            gto_advice = self.agent.tools.get_gto_advice(game_state)
+            verification["gto_alignment"] = self._compute_gto_alignment(
+                rollout.action, gto_advice
+            )
+            verification["gto_action"] = gto_advice.recommended_action
+
+            # 2. EV Estimation
+            ev_result = await self._estimate_ev(
+                rollout.action, game_state, beliefs
+            )
+            verification["ev_estimate"] = ev_result["ev"]
+            verification["ev_confidence"] = ev_result["confidence"]
+
+            # 3. Back-Verification: What happens if villain calls/raises/folds?
+            back_verify = await self._back_verify(
+                rollout.action, game_state, beliefs
+            )
+            verification["villain_responses"] = back_verify
+            verification["back_verify_score"] = back_verify["overall_score"]
+
+            # 4. Comparative: Is this better than the GTO play?
+            if rollout.strategy != "GTO":
+                verification["ev_vs_gto"] = (
+                    verification["ev_estimate"] -
+                    self._get_gto_ev(game_state, beliefs)
+                )
+
+            rollout.verification = verification
+
+        return rollouts
+
+    async def _back_verify(self, action: Action, game_state: GameState,
+                           beliefs: TableBeliefs) -> dict:
+        """
+        Back-verification: Simulate villain responses and evaluate outcomes.
+
+        "If I bet 75% pot, what happens when villain:
+         - Folds? (I win pot)
+         - Calls? (We see turn/river with X equity)
+         - Raises? (I face a tough decision with Y hand)"
+        """
+        results = {}
+
+        # Get villain's likely response frequencies
+        for villain in game_state.active_villains:
+            v_beliefs = beliefs.get_villain_beliefs(villain.player_id)
+
+            # Estimate response probabilities based on beliefs
+            if action.action_type in (ActionType.BET, ActionType.RAISE):
+                fold_prob = v_beliefs.ω_folds_to_aggression.projected_probability
+                call_prob = 0.7 * (1 - fold_prob)  # Simplified
+                raise_prob = 0.3 * (1 - fold_prob)
+
+                results[villain.player_id] = {
+                    "fold": {
+                        "probability": fold_prob,
+                        "outcome_ev": game_state.pot  # Win current pot
+                    },
+                    "call": {
+                        "probability": call_prob,
+                        "outcome_ev": self._ev_if_called(action, game_state, v_beliefs)
+                    },
+                    "raise": {
+                        "probability": raise_prob,
+                        "outcome_ev": self._ev_if_raised(action, game_state, v_beliefs)
+                    }
+                }
+
+        # Compute weighted EV across all villain responses
+        total_ev = 0
+        for v_id, responses in results.items():
+            for response, data in responses.items():
+                total_ev += data["probability"] * data["outcome_ev"]
+
+        results["overall_score"] = total_ev
+        return results
+
+    def _select_best_rollout(self,
+                             rollouts: list[StrategyRollout]) -> StrategyRollout:
+        """
+        Select best rollout considering verification signals.
+
+        Scoring combines:
+        - EV estimate (primary)
+        - Back-verification score
+        - Confidence in estimates
+        - GTO alignment (as safety factor)
+        """
+        def score_rollout(r: StrategyRollout) -> float:
+            v = r.verification
+
+            # Base score is EV estimate
+            score = v.get("ev_estimate", 0)
+
+            # Weight by confidence
+            score *= v.get("ev_confidence", 0.5)
+
+            # Bonus for strong back-verification
+            score += 0.1 * v.get("back_verify_score", 0)
+
+            # Small bonus for GTO alignment (safety)
+            score += 0.05 * v.get("gto_alignment", 0)
+
+            return score
+
+        return max(rollouts, key=score_rollout)
+
+    def _has_converged(self, prev: StrategyRollout,
+                       curr: StrategyRollout) -> bool:
+        """Check if reasoning has converged (same action, similar EV)"""
+        if prev is None:
+            return False
+
+        if prev.action.action_type != curr.action.action_type:
+            return False
+
+        # Check if amounts are close (within 10%)
+        if prev.action.amount and curr.action.amount:
+            diff = abs(prev.action.amount - curr.action.amount)
+            if diff / max(prev.action.amount, 1) > 0.1:
+                return False
+
+        return True
+```
+
+### Accumulated Knowledge Base
+
+TRT emphasizes learning from reasoning iterations. For poker:
+
+```python
+class AccumulatedKnowledge:
+    """
+    Knowledge accumulated across hands and sessions.
+
+    Stores patterns of successful/unsuccessful strategic choices
+    to inform future reasoning iterations.
+    """
+
+    def __init__(self):
+        # Strategy effectiveness by situation
+        self.strategy_outcomes: dict[str, list[StrategyOutcome]] = defaultdict(list)
+
+        # Exploitation patterns that worked
+        self.successful_exploits: list[ExploitPattern] = []
+
+        # Situations where GTO outperformed exploitation
+        self.gto_better_situations: list[SituationPattern] = []
+
+        # Back-verification failures (predicted X, actual Y)
+        self.prediction_errors: list[PredictionError] = []
+
+    def get_relevant(self, game_state: GameState,
+                     strategy: str) -> str:
+        """
+        Retrieve relevant accumulated knowledge for current decision.
+
+        Returns natural language summary for LLM context.
+        """
+        relevant = []
+
+        # Find similar past situations
+        similar = self._find_similar_situations(game_state)
+
+        for sit in similar[:3]:  # Top 3 most similar
+            if strategy in sit.strategy_outcomes:
+                outcome = sit.strategy_outcomes[strategy]
+                relevant.append(
+                    f"Similar spot ({sit.description}): {strategy} strategy "
+                    f"resulted in {outcome.result} ({outcome.ev_diff:+.1f} BB vs GTO)"
+                )
+
+        # Add relevant exploitation patterns
+        if strategy == "Exploit":
+            patterns = self._get_relevant_exploits(game_state)
+            for p in patterns[:2]:
+                relevant.append(
+                    f"Exploit pattern: {p.description} worked {p.success_rate:.0%} "
+                    f"of the time against {p.opponent_type}"
+                )
+
+        return "\n".join(relevant) if relevant else "No relevant prior knowledge."
+
+    def record_decision(self, game_state: GameState,
+                        rollout: StrategyRollout) -> None:
+        """Record this decision for future reference (updated after hand completes)"""
+        # Store for later update when we know the outcome
+        self._pending_decisions.append({
+            "game_state": game_state,
+            "rollout": rollout,
+            "timestamp": datetime.now()
+        })
+
+    def update_outcome(self, hand_result: HandResult) -> None:
+        """Update knowledge base with actual hand outcome"""
+        # Match pending decision to result
+        # Calculate actual EV vs predicted
+        # Update strategy effectiveness stats
+        # Flag any prediction errors for learning
+        ...
+```
+
+### Self-Verification Without External Feedback
+
+The key TRT insight is that verification doesn't require ground truth. For poker:
+
+| Verification Type | How It Works in Poker |
+|-------------------|----------------------|
+| **GTO Consistency** | Compare action to pre-computed GTO baseline |
+| **EV Calculation** | Monte Carlo equity × pot math gives expected value |
+| **Back-Verification** | "If I bet, villain folds X%, calls Y%, raises Z% → weighted EV" |
+| **Internal Consistency** | Does the action match the stated reasoning? |
+| **Comparative** | Is exploit EV > GTO EV given our belief confidence? |
+
+```python
+class SelfVerifier:
+    """Verify poker decisions without external ground truth"""
+
+    def verify_action(self, action: Action, game_state: GameState,
+                      beliefs: TableBeliefs, reasoning: str) -> VerificationResult:
+        """
+        Multi-signal verification inspired by TRT.
+        """
+        signals = {}
+
+        # 1. GTO alignment (0-1, 1 = exact match)
+        gto = self.gto_advisor.get_advice(game_state)
+        signals["gto_alignment"] = self._action_similarity(action, gto.action)
+
+        # 2. Mathematical EV verification
+        ev_calc = self._calculate_ev(action, game_state, beliefs)
+        signals["ev"] = ev_calc["expected_value"]
+        signals["ev_confidence"] = ev_calc["confidence"]
+
+        # 3. Back-verification (simulate responses)
+        back_verify = self._simulate_villain_responses(action, game_state, beliefs)
+        signals["back_verify_ev"] = back_verify["weighted_ev"]
+        signals["worst_case_ev"] = back_verify["worst_case"]
+
+        # 4. Reasoning consistency
+        signals["reasoning_consistent"] = self._check_reasoning_consistency(
+            action, reasoning, game_state
+        )
+
+        # 5. Belief-action coherence
+        # Does the action make sense given our beliefs?
+        signals["belief_coherent"] = self._check_belief_coherence(
+            action, beliefs, game_state
+        )
+
+        return VerificationResult(
+            signals=signals,
+            overall_confidence=self._aggregate_confidence(signals),
+            warnings=self._generate_warnings(signals)
+        )
+```
+
+---
+
 ## Implementation Phases
 
 ### Phase 1: Foundation (Week 1)
@@ -635,14 +1068,22 @@ def get_position_context(hero_position: str, villain_position: str,
 
 ---
 
-### Phase 3: LLM Agent Core (Week 3)
-**Goal**: ReAct-style reasoning loop with LLM
+### Phase 3: LLM Agent Core with TRT (Week 3)
+**Goal**: ReAct-style reasoning loop with LLM, enhanced by Test-time Recursive Thinking
+
+This phase implements the core agent with TRT-inspired iterative self-improvement from [arXiv:2602.03094](https://arxiv.org/abs/2602.03094).
+
+**Key TRT Integration Points**:
+1. **Strategy-conditioned rollouts** - Generate candidate actions under GTO/Exploit/Defensive strategies
+2. **Self-verification** - Verify actions against GTO baseline, EV calculations, back-verification
+3. **Iterative refinement** - Refine decision until convergence
+4. **Accumulated knowledge** - Learn from past strategy outcomes
 
 **Tasks**:
 
-1. **Design prompt template**
+1. **Design prompt template** (with TRT strategy conditioning)
 ```
-You are an expert poker player making decisions in Heads-Up No-Limit
+You are an expert poker player making decisions in 6-Max No-Limit
 Texas Hold'em. You have access to the following tools:
 
 - evaluate_hand: Get hand strength and ranking
@@ -1130,7 +1571,14 @@ cr-poker-bot/
 │   │   ├── __init__.py
 │   │   ├── poker_agent.py      # Main belief-conditioned ReAct agent loop
 │   │   ├── prompts.py          # Prompt templates with belief formatting
-│   │   └── action_parser.py    # Parse LLM output to actions
+│   │   ├── action_parser.py    # Parse LLM output to actions
+│   │   └── trt/                # NEW: Test-time Recursive Thinking
+│   │       ├── __init__.py
+│   │       ├── trt_decision.py     # TRT-enhanced decision maker
+│   │       ├── strategy_rollouts.py # Strategy-conditioned generation
+│   │       ├── self_verifier.py    # Self-verification without ground truth
+│   │       ├── back_verifier.py    # Back-verification of actions
+│   │       └── accumulated_knowledge.py # Knowledge base across iterations
 │   │
 │   ├── beliefs/                # NEW: Subjective logic framework
 │   │   ├── __init__.py
@@ -1184,13 +1632,18 @@ cr-poker-bot/
 │       └── evaluation.py       # Agent evaluation
 │
 ├── tests/
-│   ├── test_beliefs/           # NEW: Belief system tests
+│   ├── test_beliefs/           # Belief system tests
 │   │   ├── test_opinion.py
 │   │   ├── test_fusion.py
 │   │   └── test_updater.py
+│   ├── test_trt/               # NEW: TRT reasoning tests
+│   │   ├── test_strategy_rollouts.py
+│   │   ├── test_self_verifier.py
+│   │   ├── test_back_verifier.py
+│   │   └── test_convergence.py
 │   ├── test_tools/
 │   ├── test_memory/
-│   ├── test_engine/            # NEW: 6-max engine tests
+│   ├── test_engine/            # 6-max engine tests
 │   ├── test_agent/
 │   └── test_integration/
 │
@@ -1203,11 +1656,16 @@ cr-poker-bot/
 ├── data/
 │   ├── gto_ranges/             # Precomputed ranges
 │   ├── sessions/               # Saved game sessions
-│   └── beliefs/                # NEW: Serialized belief states
+│   ├── beliefs/                # Serialized belief states
+│   └── knowledge/              # NEW: TRT accumulated knowledge
+│       ├── strategy_outcomes.json
+│       ├── exploit_patterns.json
+│       └── prediction_errors.json
 │
 ├── configs/
 │   ├── agent_config.yaml       # Agent configuration
-│   └── belief_priors.yaml      # NEW: Base rates for beliefs
+│   ├── belief_priors.yaml      # Base rates for beliefs
+│   └── trt_config.yaml         # NEW: TRT parameters (iterations, strategies)
 │
 ├── requirements.txt
 ├── pyproject.toml
