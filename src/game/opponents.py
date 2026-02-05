@@ -81,7 +81,8 @@ class CallingStation:
         if not player:
             return Action.fold()
 
-        to_call = game_state.to_call
+        # Calculate to_call for THIS player (not hero)
+        to_call = max(0, game_state.current_bet - player.bet_this_street)
         legal = game_state.get_legal_actions()
         legal_types = {a.action_type for a in legal}
 
@@ -142,7 +143,8 @@ class TightPassive:
             return Action.fold()
 
         hand = player.hole_cards.notation
-        to_call = game_state.to_call
+        # Calculate to_call for THIS player (not hero)
+        to_call = max(0, game_state.current_bet - player.bet_this_street)
         legal = game_state.get_legal_actions()
         legal_types = {a.action_type for a in legal}
 
@@ -203,7 +205,8 @@ class LooseAggressive:
         if not player:
             return Action.fold()
 
-        to_call = game_state.to_call
+        # Calculate to_call for THIS player (not hero)
+        to_call = max(0, game_state.current_bet - player.bet_this_street)
         legal = game_state.get_legal_actions()
         legal_types = {a.action_type for a in legal}
         pot = game_state.pot.total
@@ -272,7 +275,8 @@ class TagBot:
         if not player or not player.hole_cards:
             return Action.fold()
 
-        to_call = game_state.to_call
+        # Calculate to_call for THIS player (not hero)
+        to_call = max(0, game_state.current_bet - player.bet_this_street)
         legal = game_state.get_legal_actions()
         legal_types = {a.action_type for a in legal}
         position = player.position
@@ -290,7 +294,8 @@ class TagBot:
         from ..tools.gto import ActionRecommendation
 
         hand = player.hole_cards
-        to_call = game.to_call
+        # Calculate to_call for THIS player (not hero)
+        to_call = max(0, game.current_bet - player.bet_this_street)
         bb = game.table.big_blind
 
         # Check GTO ranges
@@ -317,7 +322,8 @@ class TagBot:
     def _postflop_decision(self, player: PlayerState, game: GameState,
                            legal_types: set[ActionType]) -> Action:
         """Make postflop decision based on hand strength."""
-        to_call = game.to_call
+        # Calculate to_call for THIS player (not hero)
+        to_call = max(0, game.current_bet - player.bet_this_street)
         pot = game.pot.total
 
         # Evaluate hand

@@ -328,7 +328,8 @@ class HandRunner:
         game = self.engine.create_hand(hero_position)
         hand_id = game.hand_id
         hero_cards = game.hero.hole_cards
-        initial_stack = game.hero.stack
+        # Use starting_stack (before blinds) for proper profit calculation
+        initial_stack = self.engine.starting_stack
         actions_taken = 0
 
         # Track who has acted this street
