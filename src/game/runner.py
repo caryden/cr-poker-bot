@@ -212,6 +212,7 @@ class SimplePokerEngine:
         """Apply an action to the game state."""
         player = game.players[player_id]
         pot_before = game.pot.total
+        old_current_bet = game.current_bet
 
         if action.action_type == ActionType.FOLD:
             player.status = PlayerStatus.FOLDED
@@ -226,10 +227,17 @@ class SimplePokerEngine:
             game.pot.add(call_amount)
 
         elif action.action_type in (ActionType.BET, ActionType.RAISE):
-            bet_amount = min(action.amount, player.stack)
-            player.stack -= bet_amount
-            player.bet_this_street += bet_amount
-            game.pot.add(bet_amount)
+            # action.amount is the target total bet (raise TO amount)
+            # Calculate how much more we need to add
+            additional_amount = action.amount - player.bet_this_street
+            actual_add = min(additional_amount, player.stack)
+            player.stack -= actual_add
+            player.bet_this_street += actual_add
+            game.pot.add(actual_add)
+            # Update current bet and min raise
+            if player.bet_this_street > old_current_bet:
+                raise_size = player.bet_this_street - old_current_bet
+                game.min_raise = max(game.min_raise, raise_size)
             game.current_bet = player.bet_this_street
 
         elif action.action_type == ActionType.ALL_IN:
@@ -238,6 +246,9 @@ class SimplePokerEngine:
             player.bet_this_street += all_in_amount
             game.pot.add(all_in_amount)
             if player.bet_this_street > game.current_bet:
+                raise_size = player.bet_this_street - old_current_bet
+                if raise_size >= game.min_raise:
+                    game.min_raise = raise_size
                 game.current_bet = player.bet_this_street
             player.status = PlayerStatus.ALL_IN
 
