@@ -113,11 +113,12 @@ class HoleCards:
     card2: Card
 
     def __post_init__(self):
-        # Ensure canonical ordering
+        # Ensure canonical ordering (higher rank first)
         if (self.card1.rank.value, self.card1.suit.value) < \
            (self.card2.rank.value, self.card2.suit.value):
-            object.__setattr__(self, 'card1', self.card2)
-            object.__setattr__(self, 'card2', self.card1)
+            c1, c2 = self.card2, self.card1
+            object.__setattr__(self, 'card1', c1)
+            object.__setattr__(self, 'card2', c2)
 
     def __str__(self) -> str:
         return f"{self.card1}{self.card2}"
