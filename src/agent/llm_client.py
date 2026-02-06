@@ -16,14 +16,15 @@ except ImportError:
 
 def create_claude_client(
     api_key: Optional[str] = None,
-    model: str = "claude-sonnet-4-20250514"
+    model: str = "claude-sonnet-4-5"
 ) -> Callable[[str], str]:
     """
     Create a Claude API client for the agent.
 
     Args:
         api_key: Anthropic API key (or set ANTHROPIC_API_KEY env var)
-        model: Model to use
+        model: Model to use (default: claude-sonnet-4-5)
+               Latest options: claude-sonnet-4-5, claude-opus-4-6, claude-haiku-4-5
 
     Returns:
         Function that takes prompt and returns response
