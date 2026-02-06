@@ -624,17 +624,17 @@ class VillainBeliefs:
         return sort_beliefs_by_knowledge(self.all_beliefs())
 
     def to_agent_format(self) -> str:
-        """Format beliefs for agent consumption."""
+        """Format beliefs for agent consumption with full (b,d,u) and E=b+αu."""
         lines = [f"Beliefs about {self.player_id}:"]
 
-        # Player type (multinomial) - show most likely + distribution
+        # Player type (multinomial) - show most likely + full distribution with expectations
         best_type, prob = self.player_type.most_likely_category()
-        lines.append(f"  Player type: most likely {best_type} ({prob:.0%})")
-        lines.append(f"    Distribution: {self.player_type.to_tuple_str()}")
+        lines.append(f"  Player type: most likely {best_type} (E={prob:.2f})")
+        lines.append(f"    Full: {self.player_type.to_tuple_str()}")
 
-        # Tendencies (binomial) - sorted by knowledge
+        # Tendencies (binomial) - sorted by knowledge, show (b,d,u) and E
         if self.beliefs:
-            lines.append("  Tendencies:")
+            lines.append("  Tendencies (b,d,u | E=b+αu):")
             for belief in self.sorted_by_knowledge():
                 lines.append(f"    {belief.to_agent_format()}")
 

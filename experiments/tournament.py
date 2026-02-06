@@ -76,6 +76,82 @@ class LLMAgentPlayer:
         return decision.action
 
 
+class SimpleLLMPlayer:
+    """Fast single-call LLM player for tournaments."""
+
+    def __init__(self, player_id: str = 'LLM_Agent', model: str = 'claude-sonnet-4-5'):
+        import anthropic
+        self._player_id = player_id
+        self.model = model
+        self.client = anthropic.Anthropic()
+
+    @property
+    def player_id(self) -> str:
+        return self._player_id
+
+    def decide(self, game_state: GameState) -> Action:
+        from src.tools.equity import calculate_equity
+
+        # Get hero info
+        hero = game_state.players.get(self._player_id)
+        if not hero:
+            # Find ourselves in players
+            for pid, p in game_state.players.items():
+                if pid == self._player_id or 'LLM' in pid:
+                    hero = p
+                    break
+        if not hero:
+            return Action.fold()
+
+        hero_cards = hero.hole_cards
+        if not hero_cards:
+            return Action.check() if game_state.to_call == 0 else Action.fold()
+
+        # Calculate equity and pot odds
+        num_opponents = len([p for p in game_state.players.values()
+                           if p.status == PlayerStatus.ACTIVE and p.player_id != self._player_id])
+        num_opponents = max(1, num_opponents)
+
+        eq = calculate_equity(hero_cards, game_state.board, num_opponents=num_opponents, simulations=300)
+        pot_odds = game_state.to_call / (game_state.pot.total + game_state.to_call) if game_state.to_call > 0 else 0
+
+        board_str = str(game_state.board) if game_state.board and game_state.board.cards else 'none'
+
+        prompt = f'''Poker. ONLY respond: fold/check/call/bet N/raise N/all-in
+Board: {board_str}, Hand: {hero_cards}
+Pot: {game_state.pot.total:.0f}, To call: {game_state.to_call:.0f}, Stack: {hero.stack:.0f}
+Equity: {eq.equity:.0%}, Pot odds: {pot_odds:.0%}'''
+
+        try:
+            resp = self.client.messages.create(
+                model=self.model,
+                max_tokens=20,
+                messages=[{'role': 'user', 'content': prompt}]
+            )
+            response = resp.content[0].text.strip().lower()
+        except Exception:
+            return Action.check() if game_state.to_call == 0 else Action.fold()
+
+        return self._parse_action(response, game_state.to_call, hero.stack)
+
+    def _parse_action(self, response: str, to_call: float, stack: float) -> Action:
+        import re
+        if 'fold' in response:
+            return Action.fold()
+        elif 'check' in response:
+            return Action.check()
+        elif 'call' in response:
+            return Action.call(to_call)
+        elif 'raise' in response or 'bet' in response:
+            match = re.search(r'(\d+)', response)
+            if match:
+                return Action.raise_to(float(match.group(1)))
+            return Action.raise_to(to_call * 2 if to_call > 0 else 10)
+        elif 'all' in response:
+            return Action.all_in(stack)
+        return Action.check() if to_call == 0 else Action.call(to_call)
+
+
 class TournamentRunner:
     """
     Runs a sit-and-go style tournament.
@@ -530,18 +606,23 @@ def run_llm_tournament(
     starting_blind: float = 10.0,
     blind_increase_hands: int = 15,
     max_hands: int = 200,
-    verbose: bool = True
+    verbose: bool = True,
+    use_simple_agent: bool = True
 ) -> TournamentResult:
     """Run a tournament with LLM agent vs bots."""
 
-    # Create LLM agent
-    from src.agent.llm_client import create_claude_client
-
-    print(f"Initializing LLM agent ({model})...")
-    llm_call = create_claude_client(model=model)
-    tools = ToolRegistry()
-    react_agent = ReActAgent(tool_registry=tools, max_steps=4, llm_call=llm_call)
-    llm_player = LLMAgentPlayer(react_agent, 'LLM_Agent')
+    if use_simple_agent:
+        # Fast single-call agent (~1.5s per decision)
+        print(f"Initializing SimpleLLM agent ({model})...", flush=True)
+        llm_player = SimpleLLMPlayer('LLM_Agent', model=model)
+    else:
+        # Slow ReAct agent (~12-16s per decision)
+        from src.agent.llm_client import create_claude_client
+        print(f"Initializing ReAct agent ({model})...", flush=True)
+        llm_call = create_claude_client(model=model)
+        tools = ToolRegistry()
+        react_agent = ReActAgent(tool_registry=tools, max_steps=4, llm_call=llm_call)
+        llm_player = LLMAgentPlayer(react_agent, 'LLM_Agent')
 
     # Create bot opponents
     players = [

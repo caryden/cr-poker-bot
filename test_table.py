@@ -2,11 +2,14 @@
 """
 Test 6-player table: Hero (LLM) vs 5 villains with different play styles.
 
-Proves:
-1. 6-player game works
-2. Beliefs update for each villain based on their observed actions
-3. LLM uses villain-specific beliefs
-4. Different villain styles produce different belief profiles
+Outputs hands in PHH (Poker Hand History) format.
+
+Player Types:
+- CallingStation = Fish (calls too much, rarely raises)
+- TightPassive = NIT (plays few hands, rarely raises)
+- LooseAggressive = LAG (plays many hands, raises aggressively)
+- TagBot = TAG (Tight-Aggressive: plays few hands but raises when playing)
+- Random = Fish-like (unpredictable decisions)
 """
 import sys
 sys.path.insert(0, '.')
@@ -26,16 +29,17 @@ from src.game.runner import Deck
 from src.game.opponents import CallingStation, TightPassive, LooseAggressive, TagBot, RandomPlayer
 from src.tools.equity import calculate_equity
 from src.tools.hand_eval import evaluate_hand
+from src.formats.phh import PHHHand, PHHSession
 
 client = anthropic.Anthropic(api_key=os.environ['ANTHROPIC_API_KEY'])
 
-# Villain configurations
+# Villain configurations with style descriptions
 VILLAINS = {
-    'villain_UTG': ('CallingStation', CallingStation('villain_UTG')),
-    'villain_HJ': ('TightPassive', TightPassive('villain_HJ')),
-    'villain_CO': ('LooseAggressive', LooseAggressive('villain_CO')),
-    'villain_SB': ('TagBot', TagBot('villain_SB')),
-    'villain_BB': ('Random', RandomPlayer('villain_BB')),
+    'villain_UTG': ('CallingStation (Fish)', CallingStation('villain_UTG')),
+    'villain_HJ': ('TightPassive (NIT)', TightPassive('villain_HJ')),
+    'villain_CO': ('LooseAggressive (LAG)', LooseAggressive('villain_CO')),
+    'villain_SB': ('TagBot (TAG)', TagBot('villain_SB')),
+    'villain_BB': ('Random (Fish)', RandomPlayer('villain_BB')),
 }
 
 
@@ -136,8 +140,8 @@ def create_observation(player_id: str, action: Action, street: Street,
 
 
 def run_table_hand(belief_state: BeliefState, revision_engine: BeliefRevisionEngine,
-                   hand_num: int) -> tuple[BeliefState, dict]:
-    """Run one hand at 6-max table. Returns updated beliefs and hand result."""
+                   hand_num: int) -> tuple[BeliefState, dict, PHHHand]:
+    """Run one hand at 6-max table. Returns updated beliefs, result, and PHH record."""
 
     deck = Deck()
     deck.shuffle()
@@ -171,8 +175,44 @@ def run_table_hand(belief_state: BeliefState, revision_engine: BeliefRevisionEng
         if i < len(villain_ids):
             pos_to_villain[pos] = villain_ids[i]
 
+    # Create PHH record
+    # Player order: SB, BB, UTG, HJ, CO, BTN (standard PHH order)
+    phh_positions = [Position.SB, Position.BB, Position.UTG, Position.HJ, Position.CO, Position.BTN]
+    player_names = []
+    player_idx_map = {}  # position -> PHH player index
+
+    for i, pos in enumerate(phh_positions):
+        if pos == hero_pos:
+            player_names.append('Hero (LLM)')
+            player_idx_map[pos] = i
+        else:
+            vid = pos_to_villain.get(pos)
+            if vid:
+                style = VILLAINS[vid][0]
+                player_names.append(f'{vid.replace("villain_", "")} ({style})')
+                player_idx_map[pos] = i
+
+    phh = PHHHand(
+        variant="NT",
+        blinds_or_straddles=[5, 10, 0, 0, 0, 0],
+        min_bet=10,
+        starting_stacks=[500] * 6,
+        players=player_names,
+        event=f"Test Table Hand #{hand_num}",
+    )
+
+    # Deal hole cards in PHH
+    hero_phh_idx = player_idx_map.get(hero_pos, 0)
+    for pos, idx in player_idx_map.items():
+        if pos == hero_pos:
+            phh.add_hole_cards(idx, hero_cards, hidden=False)
+        else:
+            vid = pos_to_villain.get(pos)
+            if vid and vid in villain_cards:
+                phh.add_hole_cards(idx, villain_cards[vid], hidden=True)
+
     print(f'', flush=True)
-    print(f'=== HAND {hand_num} ===', flush=True)
+    print(f'=== HAND {hand_num} (PHH format) ===', flush=True)
     print(f'Hero: {hero_cards} at {hero_pos}', flush=True)
 
     villains_in_hand = list(VILLAINS.keys())
@@ -188,10 +228,13 @@ def run_table_hand(belief_state: BeliefState, revision_engine: BeliefRevisionEng
         game.street = street
         if street == Street.FLOP:
             game.board = Board(cards=board_cards[:3])
+            phh.add_board(board_cards[:3], Street.FLOP)
         elif street == Street.TURN:
             game.board.cards.append(board_cards[3])
+            phh.add_board([board_cards[3]], Street.TURN)
         elif street == Street.RIVER:
             game.board.cards.append(board_cards[4])
+            phh.add_board([board_cards[4]], Street.RIVER)
 
         if street == Street.PREFLOP:
             game.current_bet = 10
@@ -211,10 +254,21 @@ def run_table_hand(belief_state: BeliefState, revision_engine: BeliefRevisionEng
             # Create a mock game state for the bot
             villain_action = bot.decide(game)
 
+            # Get villain's PHH index
+            villain_pos = None
+            for pos, v in pos_to_villain.items():
+                if v == vid:
+                    villain_pos = pos
+                    break
+            villain_phh_idx = player_idx_map.get(villain_pos, 0)
+
+            # Record in PHH
+            phh.add_action(villain_phh_idx, villain_action)
+
             # Record observation and update beliefs
             obs = create_observation(
                 vid, villain_action, street,
-                Position.BB,  # Simplified
+                villain_pos or Position.BB,
                 game.pot.total,
                 facing_raise=(game.current_bet > 0)
             )
@@ -244,6 +298,9 @@ def run_table_hand(belief_state: BeliefState, revision_engine: BeliefRevisionEng
         total_llm_time += elapsed
         action, reasoning = parse_action(response, game.to_call, game.hero.stack)
 
+        # Record hero action in PHH
+        phh.add_action(hero_phh_idx, action)
+
         print(f'  Hero: {action} ({elapsed:.1f}s)', flush=True)
         print(f'    Reasoning: {reasoning[:100]}...' if len(reasoning) > 100 else f'    Reasoning: {reasoning}', flush=True)
 
@@ -264,11 +321,16 @@ def run_table_hand(belief_state: BeliefState, revision_engine: BeliefRevisionEng
             best_type, prob = vb.get_most_likely_player_type()
             print(f'  {vid}: {best_type} ({prob:.0%})', flush=True)
 
+    # Print PHH format
+    print(f'', flush=True)
+    print(f'--- PHH Format ---', flush=True)
+    print(phh.to_phh(), flush=True)
+
     return belief_state, {
         'llm_time': total_llm_time,
         'hero_folded': hero_folded,
         'villains_remaining': len(villains_in_hand)
-    }
+    }, phh
 
 
 if __name__ == '__main__':
@@ -290,9 +352,12 @@ if __name__ == '__main__':
 
     # Run 3 hands to accumulate beliefs
     total_time = 0
+    phh_session = PHHSession(event="6-Player Table Test", author="cr-poker-bot")
+
     for hand_num in range(1, 4):
-        belief_state, result = run_table_hand(belief_state, revision_engine, hand_num)
+        belief_state, result, phh = run_table_hand(belief_state, revision_engine, hand_num)
         total_time += result['llm_time']
+        phh_session.add_hand(phh)
 
     print('', flush=True)
     print('=== FINAL BELIEF STATE ===', flush=True)
@@ -301,15 +366,16 @@ if __name__ == '__main__':
         best_type, prob = vb.get_most_likely_player_type()
         dist = vb.get_player_type_distribution()
 
-        # Check if belief matches expected style
+        # Check if belief matches expected style (extract base type from "Style (Type)")
+        base_style = expected_style.split(' ')[0]  # e.g., "CallingStation" from "CallingStation (Fish)"
         expected_map = {
             'CallingStation': 'Fish',
             'TightPassive': 'NIT',
             'LooseAggressive': 'LAG',
             'TagBot': 'TAG',
-            'Random': 'Fish',  # Random appears fish-like
+            'Random': 'Fish',
         }
-        expected = expected_map.get(expected_style, '?')
+        expected = expected_map.get(base_style, '?')
         match = '✓' if best_type == expected else '?'
 
         print(f'{vid} ({expected_style}):', flush=True)
@@ -318,3 +384,7 @@ if __name__ == '__main__':
 
     print('', flush=True)
     print(f'=== Total LLM time: {total_time:.1f}s ===', flush=True)
+
+    # Save PHH files
+    phh_session.save_all('phh_output')
+    print(f'PHH files saved to phh_output/', flush=True)

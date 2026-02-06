@@ -514,9 +514,14 @@ class MultinomialOpinion:
         """
         Format for agent consumption.
 
-        Format: {CAT1: b1, CAT2: b2, ..., u: uncertainty}
+        Format: {CAT1: b1 (E=e1), CAT2: b2 (E=e2), ..., u: uncertainty}
+        where E = b + α*u is the projected expectation.
         """
-        parts = [f"{cat}={b:.2f}" for cat, b in sorted(self.beliefs.items())]
+        parts = []
+        for cat in sorted(self.beliefs.keys()):
+            b = self.beliefs[cat]
+            exp = self.projected_probability(cat)
+            parts.append(f"{cat}={b:.2f}(E={exp:.2f})")
         parts.append(f"u={self.uncertainty:.2f}")
         return "{" + ", ".join(parts) + "}"
 
@@ -735,9 +740,11 @@ class Belief:
         """
         Format belief for agent consumption.
 
-        Format: "label (b=X.XX, d=X.XX, u=X.XX)"
+        Format: "label (b=X.XX, d=X.XX, u=X.XX) E=X.XX"
+        where E = b + α*u is the projected expectation.
         """
-        return f"{self.label} {self.opinion.to_tuple_str()}"
+        exp = self.opinion.projected_probability
+        return f"{self.label} {self.opinion.to_tuple_str()} E={exp:.2f}"
 
 
 def sort_beliefs_by_knowledge(beliefs: list[Belief],

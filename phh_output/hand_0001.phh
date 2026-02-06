@@ -1,0 +1,31 @@
+# 6-Player Table Test
+# Hand #1
+
+variant = "NT"
+blinds_or_straddles = [5, 10, 0, 0, 0, 0]
+min_bet = 10
+starting_stacks = [500, 500, 500, 500, 500, 500]
+actions = [
+    "d dh p1 Kh2c",
+    "d dh p2 ????",
+    "d dh p3 ????",
+    "d dh p4 ????",
+    "d dh p5 ????",
+    "d dh p6 ????",
+    "p6 cc",
+    "p2 f",
+    "p3 cbr 30",
+    "p4 f",
+    "p5 f",
+    "p1 cc",
+    "d db 2sQcTc",
+    "p6 cc",
+    "p3 cbr 36",
+    "p1 cc",
+    "d db 3s",
+    "p6 cc",
+    "p3 cc",
+    "p1 f",
+]
+players = ["Hero (LLM)", "HJ (TightPassive (NIT))", "CO (LooseAggressive (LAG))", "SB (TagBot (TAG))", "BB (Random (Fish))", "UTG (CallingStation (Fish))"]
+author = "cr-poker-bot"
