@@ -1,0 +1,30 @@
+[project]
+name = "cr-poker-bot"
+version = "0.1.0"
+description = "LLM-based poker agent with subjective logic belief system"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "CR Poker Bot Team"}
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
