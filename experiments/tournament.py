@@ -81,8 +81,9 @@ Opponent beliefs use SL opinions: (b=belief, d=disbelief, u=uncertainty).
 - High u = we don't know much yet. High b for a type = strong evidence they ARE that type.
 
 ## Your Task
-Given the hand history, beliefs, and equity, choose ONE action.
-Respond with ONLY: fold / check / call / bet N / raise N / all-in"""
+Given the hand history, beliefs, and tool analysis, explain your reasoning in 2-3 sentences
+(equity vs pot odds, GTO recommendation, beliefs about opponents, board texture, bet sizing rationale).
+Then on a FINAL line by itself, give your action: fold / check / call / bet N / raise N / all-in"""
 
 
 class SimpleLLMPlayer:
@@ -220,7 +221,7 @@ class SimpleLLMPlayer:
         try:
             resp = self.client.messages.create(
                 model=self.model,
-                max_tokens=120,
+                max_tokens=1024,
                 system=SYSTEM_PROMPT,
                 messages=[{'role': 'user', 'content': prompt}]
             )

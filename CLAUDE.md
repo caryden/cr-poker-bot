@@ -29,7 +29,7 @@ prompt, same max_tokens, same system prompt. Read-only visibility.
 **NEVER strip down, simplify, or bypass the prompt pipeline.**
 - There are NO subclasses -- `SimpleLLMPlayer` is the only LLM agent
 - New scripts must include all tool outputs listed above
-- `max_tokens` for decisions: >= 100 (120 normal, 200+ for traced)
+- Do not artificially constrain `max_tokens` -- the LLM returns reasoning + action
 - Exceptions in LLM calls must log to stderr, never silently swallowed
 
 **NEVER silently degrade behavior.**
