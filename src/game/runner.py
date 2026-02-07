@@ -23,7 +23,17 @@ from ..core.persistence import PersistentMemoryManager
 from ..agent.react import ReActAgent, AgentDecision
 from ..agent.trt.strategy import TRTEngine
 from ..logging_config import get_logger
-from ..evaluation.hand_narrative import NarrativeTracer, HandNarrative
+
+# Lazy import to avoid circular dependency: evaluation.__init__ -> evaluation.runner -> game.runner
+NarrativeTracer = None
+HandNarrative = None
+
+def _ensure_narrative_imports():
+    global NarrativeTracer, HandNarrative
+    if NarrativeTracer is None:
+        from ..evaluation.hand_narrative import NarrativeTracer as _NT, HandNarrative as _HN
+        NarrativeTracer = _NT
+        HandNarrative = _HN
 
 logger = get_logger(__name__)
 
