@@ -134,20 +134,24 @@ class SimpleLLMPlayer:
 
         hero_cards = hero.hole_cards
         if not hero_cards:
-            return Action.check() if game_state.to_call == 0 else Action.fold()
+            to_call = max(0, game_state.current_bet - hero.bet_this_street)
+            return Action.check() if to_call == 0 else Action.fold()
+
+        # Compute to_call for THIS player (not game_state.to_call which depends on hero_id)
+        to_call = max(0, game_state.current_bet - hero.bet_this_street)
 
         num_opponents = max(1, len([p for p in game_state.players.values()
                            if p.status == PlayerStatus.ACTIVE and p.player_id != self._player_id]))
 
         # Equity (always computed — needed for pot odds even if excluded from prompt)
         eq = calculate_equity(hero_cards, game_state.board, num_opponents=num_opponents, simulations=300)
-        pot_odds = game_state.to_call / (game_state.pot.total + game_state.to_call) if game_state.to_call > 0 else 0
+        pot_odds = to_call / (game_state.pot.total + to_call) if to_call > 0 else 0
 
-        # GTO recommendation (ablation: skip if 'gto' excluded)
+        # GTO recommendation (preflop only — no postflop GTO logic yet)
         gto_rec = None
-        if 'gto' not in self.excluded_tools:
+        if 'gto' not in self.excluded_tools and game_state.street == Street.PREFLOP:
             gto_rec = should_open(hero_cards, hero.position)
-            if game_state.to_call > 0 and game_state.street == Street.PREFLOP:
+            if to_call > 0:
                 raiser_pos = None
                 for pid, p in game_state.players.items():
                     if pid != self._player_id and p.status == PlayerStatus.ACTIVE:
@@ -183,9 +187,11 @@ class SimpleLLMPlayer:
             sizing_advisor = BetSizingAdvisor()
             spr = hero.stack / game_state.pot.total if game_state.pot.total > 0 else 10
             if game_state.street == Street.PREFLOP:
+                bb = game_state.table.big_blind
+                raise_bb = to_call / bb if bb > 0 else 0
                 sizing_rec = sizing_advisor.get_preflop_sizing(
-                    hero.position, facing_raise=game_state.to_call > 0,
-                    raise_amount=game_state.to_call)
+                    hero.position, facing_raise=to_call > 0,
+                    raise_amount=raise_bb)
             elif game_state.board and game_state.board.cards:
                 texture = analyze_board(game_state.board)
                 if game_state.street == Street.FLOP:
@@ -201,6 +207,7 @@ class SimpleLLMPlayer:
         pot_odds_for_prompt = None if 'equity' in self.excluded_tools else pot_odds
 
         prompt = self._build_prompt(game_state, hero, equity_for_prompt, pot_odds_for_prompt,
+                                    to_call=to_call,
                                     gto_rec=gto_rec, board_texture_str=board_texture_str,
                                     hand_cat=hand_cat if 'equity' not in self.excluded_tools else None,
                                     sizing_rec=sizing_rec)
@@ -231,7 +238,7 @@ class SimpleLLMPlayer:
         except Exception as e:
             import sys as _sys
             print(f"[SimpleLLMPlayer] LLM error: {e}", file=_sys.stderr)
-            action = Action.check() if game_state.to_call == 0 else Action.fold()
+            action = Action.check() if to_call == 0 else Action.fold()
             if self.trace:
                 print(f"  [ERROR] {e}")
                 print(f"  → Fallback: {action}")
@@ -246,7 +253,7 @@ class SimpleLLMPlayer:
 
         # Parse action from last line
         action_line = response.strip().splitlines()[-1].lower()
-        action = self._parse_action(action_line, game_state.to_call, hero.stack)
+        action = self._parse_action(action_line, to_call, hero.stack)
 
         if self.trace:
             print(f"  → Parsed action: {action}")
@@ -256,6 +263,7 @@ class SimpleLLMPlayer:
 
     def _build_prompt(self, game_state: GameState, hero: PlayerState,
                       equity: float | None, pot_odds: float | None, *,
+                      to_call: float = 0,
                       gto_rec=None, board_texture_str=None,
                       hand_cat=None, sizing_rec=None) -> str:
         """Build prompt with PHH hand history, SL beliefs, and tool analysis."""
@@ -265,7 +273,7 @@ class SimpleLLMPlayer:
         board_str = str(game_state.board) if game_state.board and game_state.board.cards else 'none'
         parts.append(f"Hand: {hero.hole_cards} | Board: {board_str}")
         parts.append(f"Street: {game_state.street.value} | Position: {hero.position.value}")
-        parts.append(f"Pot: {game_state.pot.total:.0f} | To call: {game_state.to_call:.0f} | Stack: {hero.stack:.0f}")
+        parts.append(f"Pot: {game_state.pot.total:.0f} | To call: {to_call:.0f} | Stack: {hero.stack:.0f}")
         if equity is not None:
             parts.append(f"Equity: {equity:.0%} | Pot odds: {pot_odds:.0%}")
 
@@ -295,7 +303,9 @@ class SimpleLLMPlayer:
 
         # SL Belief state (ablation: skip if 'beliefs' excluded)
         if self.belief_state and 'beliefs' not in self.excluded_tools:
-            parts.append("\n" + self.belief_state.to_agent_format())
+            active_ids = {pid for pid, p in game_state.players.items()
+                          if p.status != PlayerStatus.FOLDED or p.stack > 0}
+            parts.append("\n" + self.belief_state.to_agent_format(active_player_ids=active_ids))
 
         # Tool analysis
         if gto_rec or board_texture_str or hand_cat or sizing_rec:
@@ -322,9 +332,10 @@ class SimpleLLMPlayer:
             return Action.call(to_call)
         elif 'raise' in response or 'bet' in response:
             match = re.search(r'(\d+)', response)
-            if match:
-                return Action.raise_to(float(match.group(1)))
-            return Action.raise_to(to_call * 2 if to_call > 0 else 10)
+            amount = float(match.group(1)) if match else (to_call * 2 if to_call > 0 else 10)
+            if to_call == 0:
+                return Action.bet(amount)
+            return Action.raise_to(amount)
         elif 'all' in response:
             return Action.all_in(stack)
         return Action.check() if to_call == 0 else Action.call(to_call)
@@ -602,6 +613,7 @@ class TournamentRunner:
                 continue
 
             game.acting_player = next_player
+            game.hero_id = next_player  # so game_state.to_call is correct for the deciding player
             player = game.players[next_player]
 
             # Before any player decides, update hand log if they have one (LLM player)

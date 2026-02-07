@@ -672,13 +672,20 @@ class BeliefState:
         beliefs.extend(self.situational_beliefs.values())
         return beliefs
 
-    def to_agent_format(self) -> str:
-        """Format complete belief state for agent consumption."""
+    def to_agent_format(self, active_player_ids: set[str] | None = None) -> str:
+        """Format complete belief state for agent consumption.
+
+        Args:
+            active_player_ids: If provided, only include beliefs for these players.
+                Eliminated players are excluded to save prompt tokens.
+        """
         lines = ["=== OPPONENT READS ==="]
         lines.append("")
 
-        # Villain beliefs
+        # Villain beliefs (only active players)
         for villain_beliefs in self.villain_beliefs.values():
+            if active_player_ids and villain_beliefs.player_id not in active_player_ids:
+                continue
             lines.append(villain_beliefs.to_agent_format())
             lines.append("")
 

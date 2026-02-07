@@ -115,8 +115,17 @@ class BetSizingAdvisor:
                 reasoning=f"Standard open from {position.value}"
             )
 
-        # 3-bet sizing
-        if raise_amount <= 3.0:  # Facing open
+        # Facing an all-in or very large raise — no re-raise sizing needed
+        if raise_amount >= 20:
+            return BetSizing(
+                size_pot_fraction=0,
+                size_bb=raise_amount,
+                purpose=BetPurpose.VALUE,
+                reasoning="Facing all-in or large raise — call/fold decision"
+            )
+
+        # 3-bet sizing (facing a standard open of ~2-3 BB)
+        if raise_amount <= 4.0:
             size = raise_amount * self.PREFLOP_3BET_MULTIPLIER
             return BetSizing(
                 size_pot_fraction=0,
@@ -125,7 +134,7 @@ class BetSizingAdvisor:
                 reasoning="Standard 3-bet sizing (3x)"
             )
 
-        # 4-bet sizing
+        # 4-bet sizing (facing a 3-bet of ~4-20 BB)
         size = raise_amount * self.PREFLOP_4BET_MULTIPLIER
         return BetSizing(
             size_pot_fraction=0,
