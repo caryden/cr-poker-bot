@@ -394,9 +394,9 @@ def pot_odds(pot: float, to_call: float) -> PotOddsResult:
     return _calculator.pot_odds(pot, to_call)
 
 
-def expected_value_call(pot: float, to_call: float, equity: float) -> EVResult:
+def expected_value_call(pot: float, to_call: float, equity: float, bb_size: float = 1.0) -> EVResult:
     """Calculate EV of calling."""
-    return _calculator.expected_value_call(pot, to_call, equity)
+    return _calculator.expected_value_call(pot, to_call, equity, bb_size)
 
 
 def minimum_defense_frequency(bet_size: float, pot: float) -> MDFResult:

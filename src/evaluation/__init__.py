@@ -19,6 +19,11 @@ from .runner import (
     quick_eval, full_eval
 )
 
+from .hand_narrative import (
+    HandNarrative, NarrativeTracer,
+    HeroDecisionNarrative, HeroThought
+)
+
 __all__ = [
     # Tracing
     'DecisionTrace', 'HandTrace', 'SessionTrace',
@@ -29,4 +34,7 @@ __all__ = [
     # Runner
     'EvaluationConfig', 'EvaluationRunner', 'EvaluationResult',
     'quick_eval', 'full_eval',
+    # Narrative
+    'HandNarrative', 'NarrativeTracer',
+    'HeroDecisionNarrative', 'HeroThought',
 ]

@@ -19,6 +19,9 @@ from ..core.primitives import Action, ActionType, Position
 from ..core.game_state import GameState
 from ..core.beliefs import BeliefState
 from .tools import ToolRegistry, ToolContext, ToolCall, ToolResult, ToolName
+from ..logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class AgentPhase(Enum):
@@ -134,15 +137,23 @@ class ReActAgent:
 
         # Build initial prompt
         prompt = self._build_initial_prompt(game_state, belief_state)
+        logger.info("Agent deciding: %s, to_call=%.0f, pot=%.0f",
+                     game_state.street.value, game_state.to_call, game_state.pot.total)
+        logger.debug("Agent prompt:\n%s", prompt)
 
         # ReAct loop
         for step_num in range(self.max_steps):
             # Get LLM response
             response = self.llm_call(prompt)
+            logger.debug("LLM response (step %d):\n%s", step_num + 1, response)
 
             # Parse response
             step = self._parse_response(response, context)
             self.steps.append(step)
+
+            if step.tool_call:
+                logger.info("  Tool call: %s -> %s",
+                             step.tool_call, step.tool_result.result if step.tool_result else "?")
 
             # Check if decision made
             if step.phase == AgentPhase.DECIDE and step.action_proposed:
@@ -151,13 +162,16 @@ class ReActAgent:
                     step.action_proposed, game_state, context
                 )
 
-                return AgentDecision(
+                decision = AgentDecision(
                     action=step.action_proposed,
                     reasoning=self._compile_reasoning(),
                     confidence=self._estimate_confidence(),
                     verification_passed=verified,
                     steps=self.steps
                 )
+                logger.info("  Decision: %s (confidence=%.2f, verified=%s)",
+                             decision.action, decision.confidence, verified)
+                return decision
 
             # If tool was called, add result to prompt
             if step.tool_result:
@@ -166,6 +180,7 @@ class ReActAgent:
                 )
 
         # Max steps reached - force decision
+        logger.warning("Agent reached max steps (%d), forcing decision", self.max_steps)
         return self._force_decision(game_state, context)
 
     def _build_initial_prompt(
@@ -288,12 +303,31 @@ class ReActAgent:
             )
 
     def _parse_params(self, params_str: str) -> dict:
-        """Parse parameter string into dict."""
+        """Parse parameter string into dict, respecting quoted strings."""
         params = {}
         if not params_str.strip():
             return params
 
-        for part in params_str.split(","):
+        # Split on commas that are NOT inside quotes
+        parts = []
+        current = []
+        in_quote = None
+        for ch in params_str:
+            if ch in ('"', "'") and in_quote is None:
+                in_quote = ch
+                current.append(ch)
+            elif ch == in_quote:
+                in_quote = None
+                current.append(ch)
+            elif ch == ',' and in_quote is None:
+                parts.append(''.join(current))
+                current = []
+            else:
+                current.append(ch)
+        if current:
+            parts.append(''.join(current))
+
+        for part in parts:
             if "=" in part:
                 key, value = part.split("=", 1)
                 key = key.strip()

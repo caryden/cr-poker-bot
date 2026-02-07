@@ -22,6 +22,10 @@ from ..core.memory import OpponentMemory, TableMemory
 from ..core.persistence import PersistentMemoryManager
 from ..agent.react import ReActAgent, AgentDecision
 from ..agent.trt.strategy import TRTEngine
+from ..logging_config import get_logger
+from ..evaluation.hand_narrative import NarrativeTracer, HandNarrative
+
+logger = get_logger(__name__)
 
 
 class PlayerProtocol(Protocol):
@@ -327,12 +331,14 @@ class HandRunner:
         engine: SimplePokerEngine,
         hero: PlayerProtocol,
         villains: dict[str, PlayerProtocol],
-        memory_manager: Optional[PersistentMemoryManager] = None
+        memory_manager: Optional[PersistentMemoryManager] = None,
+        narrative_tracer: Optional[NarrativeTracer] = None
     ):
         self.engine = engine
         self.hero = hero
         self.villains = villains
         self.memory_manager = memory_manager
+        self.narrative_tracer = narrative_tracer
 
     def run_hand(self, hero_position: Position) -> HandResult:
         """Run a single hand and return the result."""
@@ -343,9 +349,19 @@ class HandRunner:
         initial_stack = self.engine.starting_stack
         actions_taken = 0
 
+        logger.info("Hand %s: Hero at %s with %s", hand_id, hero_position.value, hero_cards)
+
+        # Set up narrative tracing if enabled
+        narrative: Optional[HandNarrative] = None
+        if self.narrative_tracer:
+            narrative = self.narrative_tracer.start_hand(
+                hand_id, "hero", hero_position, hero_cards
+            )
+
         # Track who has acted this street
         acted_this_street: set[str] = set()
         last_aggressor: Optional[str] = None
+        current_street = game.street
 
         # Play through streets
         while not self.engine.is_hand_over(game):
@@ -357,6 +373,9 @@ class HandRunner:
                     break
                 acted_this_street.clear()
                 last_aggressor = None
+                # Record the new street in narrative
+                if narrative:
+                    narrative.add_street(game.street, str(game.board), game.pot.total)
                 continue
 
             # Set acting player so game state knows who's deciding
@@ -364,7 +383,32 @@ class HandRunner:
 
             # Get action
             if next_player == self.hero.player_id:
-                action = self.hero.decide(game)
+                # Capture hero reasoning in narrative
+                hero_narrative = None
+                if narrative:
+                    hero_narrative = narrative.begin_hero_decision(game)
+
+                if isinstance(self.hero, AgentPlayer) and hero_narrative:
+                    # Full agent with reasoning - capture the decision trace
+                    decision = self.hero.agent.decide(game)
+                    action = decision.action
+                    # Populate narrative from agent steps
+                    for step in decision.steps:
+                        if step.thought:
+                            hero_narrative.add_thought(step.thought)
+                        if step.tool_call and step.tool_result:
+                            hero_narrative.add_tool_call(
+                                str(step.tool_call),
+                                step.tool_result.result[:120] if step.tool_result.result else "ok"
+                            )
+                    hero_narrative.set_decision(action, decision.confidence, decision.verification_passed)
+                else:
+                    action = self.hero.decide(game)
+                    if hero_narrative:
+                        hero_narrative.set_decision(action, 0.0, False)
+
+                if narrative:
+                    narrative.end_hero_decision()
             else:
                 villain = self.villains.get(next_player)
                 if villain:
@@ -392,7 +436,12 @@ class HandRunner:
             else:
                 acted_this_street.add(next_player)
 
+            # Record action in narrative (for non-hero players, hero already recorded above)
+            if narrative and next_player != self.hero.player_id:
+                narrative.add_action(next_player, player.position, action, game.pot.total)
+
             # Apply action
+            logger.debug("%s %s: %s (pot: %.0f)", game.street.value, next_player, action, game.pot.total)
             self.engine.apply_action(game, next_player, action)
             actions_taken += 1
 
@@ -406,6 +455,10 @@ class HandRunner:
         # Calculate result
         hero_profit = (game.hero.stack - initial_stack) / self.engine.big_blind
         went_to_showdown = game.street == Street.RIVER and len(self.engine.get_active_players(game)) > 1
+
+        # Finalize narrative
+        if self.narrative_tracer:
+            self.narrative_tracer.end_hand(hero_profit, went_to_showdown)
 
         return HandResult(
             hand_id=hand_id,
@@ -504,12 +557,15 @@ class HandRunner:
 
         if game.street == Street.PREFLOP:
             self.engine.deal_flop(game)
+            logger.info("Flop: %s (pot: %.0f)", game.board, game.pot.total)
             return True
         elif game.street == Street.FLOP:
             self.engine.deal_turn(game)
+            logger.info("Turn: %s (pot: %.0f)", game.board, game.pot.total)
             return True
         elif game.street == Street.TURN:
             self.engine.deal_river(game)
+            logger.info("River: %s (pot: %.0f)", game.board, game.pot.total)
             return True
         return False
 
