@@ -21,6 +21,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.core.primitives import Action, ActionType, Position, HoleCards, Card, Board
 from src.core.game_state import GameState, PlayerState, PlayerStatus, create_6max_game
 from src.core import Street
+from src.core.beliefs import (
+    BeliefState, BeliefRevisionEngine, Observation, ObservationType, GameContext,
+    create_default_villain_beliefs
+)
 from src.game.runner import SimplePokerEngine, HandRunner, Deck
 from src.game.opponents import RandomPlayer, CallingStation, TightPassive, LooseAggressive, TagBot
 from src.agent.react import ReActAgent
@@ -76,14 +80,39 @@ class LLMAgentPlayer:
         return decision.action
 
 
+SYSTEM_PROMPT = """You are an expert poker AI playing 6-max No-Limit Hold'em.
+
+You will receive the current hand state in PHH-style notation plus opponent beliefs.
+
+## PHH Action Notation
+- "d dh pN XXXX" = deal hole cards to player N
+- "d db XXXX" = deal board cards (flop/turn/river)
+- "pN f" = player N folds
+- "pN cc" = player N checks or calls
+- "pN cbr AMT" = player N bets or raises TO amount AMT
+
+## Belief State (Subjective Logic)
+Opponent beliefs use SL opinions: (b=belief, d=disbelief, u=uncertainty).
+- E = b + base_rate * u is the projected expectation (probability estimate).
+- Player types: TAG (tight-aggressive), LAG (loose-aggressive), NIT (tight-passive), Fish (calling station), Maniac.
+- High u = we don't know much yet. High b for a type = strong evidence they ARE that type.
+
+## Your Task
+Given the hand history, beliefs, and equity, choose ONE action.
+Respond with ONLY: fold / check / call / bet N / raise N / all-in"""
+
+
 class SimpleLLMPlayer:
-    """Fast single-call LLM player for tournaments."""
+    """LLM player that receives full hand history (PHH) and SL beliefs."""
 
     def __init__(self, player_id: str = 'LLM_Agent', model: str = 'claude-sonnet-4-5'):
         import anthropic
         self._player_id = player_id
         self.model = model
         self.client = anthropic.Anthropic()
+        # Set externally by the tournament runner each hand
+        self.belief_state = None   # BeliefState
+        self.hand_log = []         # list of (player_id, position, action, street) for current hand
 
     @property
     def player_id(self) -> str:
@@ -92,10 +121,8 @@ class SimpleLLMPlayer:
     def decide(self, game_state: GameState) -> Action:
         from src.tools.equity import calculate_equity
 
-        # Get hero info
         hero = game_state.players.get(self._player_id)
         if not hero:
-            # Find ourselves in players
             for pid, p in game_state.players.items():
                 if pid == self._player_id or 'LLM' in pid:
                     hero = p
@@ -107,25 +134,19 @@ class SimpleLLMPlayer:
         if not hero_cards:
             return Action.check() if game_state.to_call == 0 else Action.fold()
 
-        # Calculate equity and pot odds
-        num_opponents = len([p for p in game_state.players.values()
-                           if p.status == PlayerStatus.ACTIVE and p.player_id != self._player_id])
-        num_opponents = max(1, num_opponents)
+        num_opponents = max(1, len([p for p in game_state.players.values()
+                           if p.status == PlayerStatus.ACTIVE and p.player_id != self._player_id]))
 
         eq = calculate_equity(hero_cards, game_state.board, num_opponents=num_opponents, simulations=300)
         pot_odds = game_state.to_call / (game_state.pot.total + game_state.to_call) if game_state.to_call > 0 else 0
 
-        board_str = str(game_state.board) if game_state.board and game_state.board.cards else 'none'
-
-        prompt = f'''Poker. ONLY respond: fold/check/call/bet N/raise N/all-in
-Board: {board_str}, Hand: {hero_cards}
-Pot: {game_state.pot.total:.0f}, To call: {game_state.to_call:.0f}, Stack: {hero.stack:.0f}
-Equity: {eq.equity:.0%}, Pot odds: {pot_odds:.0%}'''
+        prompt = self._build_prompt(game_state, hero, eq.equity, pot_odds)
 
         try:
             resp = self.client.messages.create(
                 model=self.model,
-                max_tokens=20,
+                max_tokens=30,
+                system=SYSTEM_PROMPT,
                 messages=[{'role': 'user', 'content': prompt}]
             )
             response = resp.content[0].text.strip().lower()
@@ -133,6 +154,50 @@ Equity: {eq.equity:.0%}, Pot odds: {pot_odds:.0%}'''
             return Action.check() if game_state.to_call == 0 else Action.fold()
 
         return self._parse_action(response, game_state.to_call, hero.stack)
+
+    def _build_prompt(self, game_state: GameState, hero: PlayerState,
+                      equity: float, pot_odds: float) -> str:
+        """Build prompt with PHH hand history and SL beliefs."""
+        parts = []
+
+        # Table info
+        board_str = str(game_state.board) if game_state.board and game_state.board.cards else 'none'
+        parts.append(f"Hand: {hero.hole_cards} | Board: {board_str}")
+        parts.append(f"Street: {game_state.street.value} | Position: {hero.position.value}")
+        parts.append(f"Pot: {game_state.pot.total:.0f} | To call: {game_state.to_call:.0f} | Stack: {hero.stack:.0f}")
+        parts.append(f"Equity: {equity:.0%} | Pot odds: {pot_odds:.0%}")
+
+        # Villain stacks
+        parts.append("\nPlayers:")
+        for pid, p in game_state.players.items():
+            status = p.status.value if hasattr(p.status, 'value') else str(p.status)
+            marker = " (HERO)" if pid == self._player_id else ""
+            parts.append(f"  {pid} [{p.position.value}]: stack {p.stack:.0f} - {status}{marker}")
+
+        # PHH-style hand history for this hand
+        if self.hand_log:
+            parts.append("\nHand history (this hand):")
+            current_street = None
+            for pid, pos, action, street in self.hand_log:
+                if street != current_street:
+                    current_street = street
+                    parts.append(f"  -- {street} --")
+                # PHH-style notation
+                if action.action_type == ActionType.FOLD:
+                    parts.append(f"  {pid}@{pos}: f")
+                elif action.action_type in (ActionType.CHECK, ActionType.CALL):
+                    parts.append(f"  {pid}@{pos}: cc")
+                elif action.action_type in (ActionType.BET, ActionType.RAISE):
+                    parts.append(f"  {pid}@{pos}: cbr {action.amount:.0f}")
+                elif action.action_type == ActionType.ALL_IN:
+                    parts.append(f"  {pid}@{pos}: cbr {action.amount:.0f} (all-in)")
+
+        # SL Belief state
+        if self.belief_state:
+            parts.append("\n" + self.belief_state.to_agent_format())
+
+        parts.append("\nYour action:")
+        return "\n".join(parts)
 
     def _parse_action(self, response: str, to_call: float, stack: float) -> Action:
         import re
@@ -189,6 +254,14 @@ class TournamentRunner:
         self.current_blind = starting_blind
         self.finish_order: list[str] = []
         self.hand_history: list[dict] = []
+
+        # Belief tracking for LLM players
+        self.belief_state = BeliefState()
+        self.belief_engine = BeliefRevisionEngine(trust_discount=0.9)
+        # Initialize default beliefs for all players
+        for p in self.players.values():
+            create_default_villain_beliefs(p.player_id)
+            self.belief_state.get_or_create_villain(p.player_id)
 
     def get_active_players(self) -> list[TournamentPlayer]:
         """Get players still in tournament."""
@@ -386,6 +459,14 @@ class TournamentRunner:
 
             acted_this_street.add(player_id)
 
+        # Track actions for hand history (PHH-style) and belief updates
+        hand_action_log = []  # (player_id, position_str, action, street_str)
+
+        # Push belief state + empty log to LLM player before hand starts
+        if hasattr(hero.player, 'belief_state'):
+            hero.player.belief_state = self.belief_state
+            hero.player.hand_log = []
+
         # Main game loop
         max_actions = 100
         action_count = 0
@@ -408,6 +489,11 @@ class TournamentRunner:
                 continue
 
             game.acting_player = next_player
+            player = game.players[next_player]
+
+            # Before hero decides, update the hand log on the player
+            if next_player == hero.player_id and hasattr(hero.player, 'hand_log'):
+                hero.player.hand_log = list(hand_action_log)
 
             # Get decision
             if next_player == hero.player_id:
@@ -417,8 +503,13 @@ class TournamentRunner:
                 if villain:
                     action = villain.decide(game)
                 else:
-                    to_call = max(0, game.current_bet - game.players[next_player].bet_this_street)
+                    to_call = max(0, game.current_bet - player.bet_this_street)
                     action = Action.check() if to_call == 0 else Action.fold()
+
+            # Record action to hand log
+            pos_str = player.position.value if player.position else "?"
+            street_str = game.street.value if hasattr(game.street, 'value') else str(game.street)
+            hand_action_log.append((next_player, pos_str, action, street_str))
 
             apply_action(next_player, action)
             action_count += 1
@@ -447,6 +538,38 @@ class TournamentRunner:
                 share = game.pot.total / len(winners)
                 for w in winners:
                     w.stack += share
+
+        # Update beliefs from villain actions observed this hand
+        self.belief_engine.reset_action_tracking()
+        for pid, pos_str, action, street_str in hand_action_log:
+            if pid == hero.player_id:
+                continue  # Skip hero actions for belief updates
+            # Map street string to Street enum
+            street_map = {'preflop': Street.PREFLOP, 'flop': Street.FLOP,
+                          'turn': Street.TURN, 'river': Street.RIVER}
+            street = street_map.get(street_str, Street.PREFLOP)
+            # Map position string to Position enum
+            pos_map = {'UTG': Position.UTG, 'HJ': Position.HJ, 'CO': Position.CO,
+                       'BTN': Position.BTN, 'SB': Position.SB, 'BB': Position.BB}
+            position = pos_map.get(pos_str, Position.UTG)
+
+            active_count = sum(1 for p in game.players.values()
+                             if p.status in (PlayerStatus.ACTIVE, PlayerStatus.ALL_IN))
+            obs = Observation(
+                obs_id=f"h{self.hands_played}_{len(self.belief_engine.observation_history)}",
+                obs_type=ObservationType.ACTION,
+                player_id=pid,
+                action=action,
+                context=GameContext(
+                    street=street,
+                    position=position,
+                    pot_size=game.pot.total,
+                    to_call=0,
+                    num_players=active_count,
+                    is_heads_up=active_count == 2,
+                )
+            )
+            self.belief_state = self.belief_engine.process_observation(obs, self.belief_state)
 
         # Calculate profits
         profits = {}
