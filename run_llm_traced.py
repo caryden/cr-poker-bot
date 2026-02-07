@@ -67,6 +67,10 @@ Equity: {eq.equity:.0%}, Pot odds: {pot_odds:.0%}'''
         print(f"  Board:     {board_str}")
         print(f"  Pot:       {game_state.pot.total:.0f}  |  To call: {game_state.to_call:.0f}  |  Stack: {hero.stack:.0f}")
         print(f"  Equity:    {eq.equity:.0%}  |  Pot odds: {pot_odds:.0%}")
+        print(f"  ┌── Prompt ──")
+        for line in prompt.strip().splitlines():
+            print(f"  │ {line}")
+        print(f"  └──────────")
 
         try:
             resp = self.client.messages.create(
