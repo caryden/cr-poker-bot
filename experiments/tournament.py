@@ -369,10 +369,9 @@ class TournamentRunner:
         # Belief tracking for LLM players
         self.belief_state = BeliefState()
         self.belief_engine = BeliefRevisionEngine(trust_discount=0.9)
-        # Initialize default beliefs for all players
+        # Initialize default beliefs (with tendencies) for all players
         for p in self.players.values():
-            create_default_villain_beliefs(p.player_id)
-            self.belief_state.get_or_create_villain(p.player_id)
+            self.belief_state.villain_beliefs[p.player_id] = create_default_villain_beliefs(p.player_id)
 
     def get_active_players(self) -> list[TournamentPlayer]:
         """Get players still in tournament."""

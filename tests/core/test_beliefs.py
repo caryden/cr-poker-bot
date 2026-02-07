@@ -167,6 +167,27 @@ class TestBeliefState:
         assert "BELIEF STATE" in formatted
         assert "villain1" in formatted
 
+    def test_default_beliefs_include_tendencies(self):
+        """Regression: tournament runner must use create_default_villain_beliefs
+        so that binomial tendencies (aggression, bluff freq, etc.) are present."""
+        state = BeliefState()
+        state.villain_beliefs["v1"] = create_default_villain_beliefs("v1")
+
+        formatted = state.to_agent_format()
+
+        assert "is aggressive" in formatted
+        assert "is passive" in formatted
+        assert "bluffs often" in formatted
+        assert "positionally aware" in formatted
+
+    def test_bare_get_or_create_lacks_tendencies(self):
+        """Documents that get_or_create_villain does NOT add tendencies —
+        you must use create_default_villain_beliefs."""
+        state = BeliefState()
+        state.get_or_create_villain("v1")
+
+        assert len(state.villain_beliefs["v1"].beliefs) == 0
+
 
 class TestObservationBeliefMapper:
     """Tests for ObservationBeliefMapper class."""
