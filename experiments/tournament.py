@@ -95,13 +95,15 @@ class SimpleLLMPlayer:
 
     VALID_ABLATION_TOOLS = {'equity', 'gto', 'board_texture', 'bet_sizing', 'beliefs'}
 
-    def __init__(self, player_id: str = 'LLM_Hero', model: str = 'claude-sonnet-4-5',
-                 excluded_tools: set[str] | None = None):
+    def __init__(self, player_id: str = 'Hero', model: str = 'claude-sonnet-4-5',
+                 excluded_tools: set[str] | None = None, trace: bool = False):
         import anthropic
         self._player_id = player_id
         self.model = model
         self.client = anthropic.Anthropic()
         self.excluded_tools = set(excluded_tools or [])
+        self.trace = trace
+        self.decision_count = 0
         if self.excluded_tools - self.VALID_ABLATION_TOOLS:
             raise ValueError(f"Invalid ablation tools: {self.excluded_tools - self.VALID_ABLATION_TOOLS}")
         # Set externally by the tournament runner each hand
@@ -200,6 +202,21 @@ class SimpleLLMPlayer:
                                     hand_cat=hand_cat if 'equity' not in self.excluded_tools else None,
                                     sizing_rec=sizing_rec)
 
+        self.decision_count += 1
+
+        if self.trace:
+            print(f"\n  {'─' * 70}")
+            print(f"  LLM Decision #{self.decision_count}")
+            print(f"  {'─' * 70}")
+            print(f"  ┌── System Prompt ──")
+            for line in SYSTEM_PROMPT.strip().splitlines():
+                print(f"  │ {line}")
+            print(f"  └──────────")
+            print(f"  ┌── User Prompt ──")
+            for line in prompt.strip().splitlines():
+                print(f"  │ {line}")
+            print(f"  └──────────")
+
         try:
             resp = self.client.messages.create(
                 model=self.model,
@@ -207,13 +224,32 @@ class SimpleLLMPlayer:
                 system=SYSTEM_PROMPT,
                 messages=[{'role': 'user', 'content': prompt}]
             )
-            response = resp.content[0].text.strip().lower()
+            response = resp.content[0].text.strip()
         except Exception as e:
-            import sys
-            print(f"[SimpleLLMPlayer] LLM error: {e}", file=sys.stderr)
-            return Action.check() if game_state.to_call == 0 else Action.fold()
+            import sys as _sys
+            print(f"[SimpleLLMPlayer] LLM error: {e}", file=_sys.stderr)
+            action = Action.check() if game_state.to_call == 0 else Action.fold()
+            if self.trace:
+                print(f"  [ERROR] {e}")
+                print(f"  → Fallback: {action}")
+                print(f"  {'─' * 70}")
+            return action
 
-        return self._parse_action(response, game_state.to_call, hero.stack)
+        if self.trace:
+            print(f"  ┌── LLM Response ──")
+            for line in response.splitlines():
+                print(f"  │ {line}")
+            print(f"  └──────────")
+
+        # Parse action from last line
+        action_line = response.strip().splitlines()[-1].lower()
+        action = self._parse_action(action_line, game_state.to_call, hero.stack)
+
+        if self.trace:
+            print(f"  → Parsed action: {action}")
+            print(f"  {'─' * 70}")
+
+        return action
 
     def _build_prompt(self, game_state: GameState, hero: PlayerState,
                       equity: float | None, pot_odds: float | None, *,
@@ -536,10 +572,11 @@ class TournamentRunner:
         # Track actions for hand history (PHH-style) and belief updates
         hand_action_log = []  # (player_id, position_str, action, street_str)
 
-        # Push belief state + empty log to LLM player before hand starts
-        if hasattr(hero.player, 'belief_state'):
-            hero.player.belief_state = self.belief_state
-            hero.player.hand_log = []
+        # Push belief state + empty log to the LLM player before hand starts
+        for tp in active:
+            if hasattr(tp.player, 'belief_state'):
+                tp.player.belief_state = self.belief_state
+                tp.player.hand_log = []
 
         # Main game loop
         max_actions = 100
@@ -565,9 +602,10 @@ class TournamentRunner:
             game.acting_player = next_player
             player = game.players[next_player]
 
-            # Before hero decides, update the hand log on the player
-            if next_player == hero.player_id and hasattr(hero.player, 'hand_log'):
-                hero.player.hand_log = list(hand_action_log)
+            # Before any player decides, update hand log if they have one (LLM player)
+            tp = self.players.get(next_player)
+            if tp and hasattr(tp.player, 'hand_log'):
+                tp.player.hand_log = list(hand_action_log)
 
             # Get decision
             if next_player == hero.player_id:
@@ -777,12 +815,12 @@ def run_bot_only_tournament(
 
     # Create bot players
     players = [
-        TournamentPlayer('FISH_1', CallingStation('FISH_1'), starting_stack),
-        TournamentPlayer('FISH_2', CallingStation('FISH_2'), starting_stack),
-        TournamentPlayer('NIT', TightPassive('NIT'), starting_stack),
-        TournamentPlayer('LAG', LooseAggressive('LAG'), starting_stack),
-        TournamentPlayer('TAG', TagBot('TAG'), starting_stack),
-        TournamentPlayer('RANDOM', RandomPlayer('RANDOM'), starting_stack),
+        TournamentPlayer('Bot_1', CallingStation('Bot_1'), starting_stack),
+        TournamentPlayer('Bot_2', CallingStation('Bot_2'), starting_stack),
+        TournamentPlayer('Bot_3', TightPassive('Bot_3'), starting_stack),
+        TournamentPlayer('Bot_4', LooseAggressive('Bot_4'), starting_stack),
+        TournamentPlayer('Bot_5', TagBot('Bot_5'), starting_stack),
+        TournamentPlayer('Bot_6', RandomPlayer('Bot_6'), starting_stack),
     ]
 
     runner = TournamentRunner(
@@ -816,15 +854,15 @@ def run_llm_tournament(
     print(f"Initializing LLM hero ({model})...", flush=True)
     if excluded_tools:
         print(f"  Ablation: excluding {excluded_tools}", flush=True)
-    llm_player = SimpleLLMPlayer('LLM_Hero', model=model, excluded_tools=excluded_tools)
+    llm_player = SimpleLLMPlayer('Hero', model=model, excluded_tools=excluded_tools)
 
     players = [
-        TournamentPlayer('LLM_Hero', llm_player, starting_stack),
-        TournamentPlayer('FISH', CallingStation('FISH'), starting_stack),
-        TournamentPlayer('NIT', TightPassive('NIT'), starting_stack),
-        TournamentPlayer('LAG', LooseAggressive('LAG'), starting_stack),
-        TournamentPlayer('TAG', TagBot('TAG'), starting_stack),
-        TournamentPlayer('RANDOM', RandomPlayer('RANDOM'), starting_stack),
+        TournamentPlayer('Hero', llm_player, starting_stack),
+        TournamentPlayer('Player_1', CallingStation('Player_1'), starting_stack),
+        TournamentPlayer('Player_2', TightPassive('Player_2'), starting_stack),
+        TournamentPlayer('Player_3', LooseAggressive('Player_3'), starting_stack),
+        TournamentPlayer('Player_4', TagBot('Player_4'), starting_stack),
+        TournamentPlayer('Player_5', RandomPlayer('Player_5'), starting_stack),
     ]
 
     runner = TournamentRunner(

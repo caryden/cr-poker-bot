@@ -21,32 +21,27 @@ def main():
     starting_stack = 1000.0
     starting_blind = 10.0
 
-    # Randomly select 5 strategy bots (with replacement)
+    # Randomly select 5 strategy bots — neutral IDs so LLM can't cheat
     selected = random.choices(STRATEGY_BOTS, k=5)
-
-    # Deduplicate names with counters
-    name_counts = {}
-    villains = []
-    for label, cls in selected:
-        name_counts[label] = name_counts.get(label, 0) + 1
-        pid = f"{label}_{name_counts[label]}"
-        villains.append((pid, cls))
+    villains = []  # (neutral_id, strategy_name, cls)
+    for i, (label, cls) in enumerate(selected, 1):
+        villains.append((f"Player_{i}", label, cls))
 
     print("=" * 70)
     print("TABLE SETUP")
     print("=" * 70)
-    print(f"Hero:     LLM_Hero (SimpleLLMPlayer, claude-sonnet-4-5)")
-    for pid, cls in villains:
-        print(f"Villain:  {pid} ({cls.__name__})")
+    print(f"Hero:     Hero (SimpleLLMPlayer, claude-sonnet-4-5)")
+    for pid, strat, cls in villains:
+        print(f"Villain:  {pid} = {strat} ({cls.__name__})")
     print(f"Stack:    {starting_stack}")
     print(f"Blinds:   {starting_blind/2:.0f}/{starting_blind:.0f}")
     print("=" * 70)
     print()
 
-    llm_player = SimpleLLMPlayer("LLM_Hero", model="claude-sonnet-4-5")
+    llm_player = SimpleLLMPlayer("Hero", model="claude-sonnet-4-5")
 
-    players = [TournamentPlayer("LLM_Hero", llm_player, starting_stack)]
-    for pid, cls in villains:
+    players = [TournamentPlayer("Hero", llm_player, starting_stack)]
+    for pid, strat, cls in villains:
         players.append(TournamentPlayer(pid, cls(pid), starting_stack))
 
     runner = TournamentRunner(
@@ -73,10 +68,10 @@ def main():
     print("Finish order:")
     for i, pid in enumerate(result.finish_order):
         tp = runner.players[pid]
-        marker = " <-- HERO" if pid == "LLM_Hero" else ""
+        marker = " <-- HERO" if pid == "Hero" else ""
         print(f"  {i+1}. {pid:20s}  {tp.stack:>7.0f} chips  ({tp.hands_played} hands){marker}")
     print()
-    hero_finish = result.finish_order.index("LLM_Hero") + 1
+    hero_finish = result.finish_order.index("Hero") + 1
     print(f"LLM Hero finished: #{hero_finish} of {len(result.finish_order)}")
 
 

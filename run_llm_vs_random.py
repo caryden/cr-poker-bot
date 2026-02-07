@@ -16,16 +16,16 @@ def main():
     starting_blind = 10.0
 
     print("Initializing SimpleLLM agent (claude-sonnet-4-5)...", flush=True)
-    llm_player = SimpleLLMPlayer('LLM_Hero', model='claude-sonnet-4-5')
+    llm_player = SimpleLLMPlayer('Hero', model='claude-sonnet-4-5')
 
-    # Create 5 random opponents
+    # Create 5 random opponents with neutral IDs
     players = [
-        TournamentPlayer('LLM_Hero', llm_player, starting_stack),
-        TournamentPlayer('RANDOM_1', RandomPlayer('RANDOM_1'), starting_stack),
-        TournamentPlayer('RANDOM_2', RandomPlayer('RANDOM_2'), starting_stack),
-        TournamentPlayer('RANDOM_3', RandomPlayer('RANDOM_3'), starting_stack),
-        TournamentPlayer('RANDOM_4', RandomPlayer('RANDOM_4'), starting_stack),
-        TournamentPlayer('RANDOM_5', RandomPlayer('RANDOM_5'), starting_stack),
+        TournamentPlayer('Hero', llm_player, starting_stack),
+        TournamentPlayer('Player_1', RandomPlayer('Player_1'), starting_stack),
+        TournamentPlayer('Player_2', RandomPlayer('Player_2'), starting_stack),
+        TournamentPlayer('Player_3', RandomPlayer('Player_3'), starting_stack),
+        TournamentPlayer('Player_4', RandomPlayer('Player_4'), starting_stack),
+        TournamentPlayer('Player_5', RandomPlayer('Player_5'), starting_stack),
     ]
 
     runner = TournamentRunner(
@@ -52,7 +52,7 @@ def main():
     for i, pid in enumerate(result.finish_order):
         tp = runner.players[pid]
         print(f"  {i+1}. {pid}: {tp.stack:.0f} chips ({tp.hands_played} hands played)")
-    print(f"\nLLM Hero finished: #{result.finish_order.index('LLM_Hero') + 1} of 6")
+    print(f"\nLLM Hero finished: #{result.finish_order.index('Hero') + 1} of 6")
 
 
 if __name__ == '__main__':

@@ -9,8 +9,9 @@ The LLM receives rich context from analysis tools and a belief system.
 `SimpleLLMPlayer` in `experiments/tournament.py` is the **only** LLM agent.
 `_build_prompt()` is the single source of truth for prompt construction.
 
-`TracedLLMPlayer` in `run_llm_traced.py` extends it to print the full
-prompt/response trace. It must call `_build_prompt()`.
+Trace mode (`trace=True`) prints the full system prompt, user prompt,
+and LLM response for debugging. It does NOT change behavior -- same
+prompt, same max_tokens, same system prompt. Read-only visibility.
 
 ## Required Tool Outputs in Every Decision Prompt
 
@@ -26,7 +27,7 @@ prompt/response trace. It must call `_build_prompt()`.
 ## Critical Rules
 
 **NEVER strip down, simplify, or bypass the prompt pipeline.**
-- Subclasses must call `_build_prompt()`, not build their own prompt
+- There are NO subclasses -- `SimpleLLMPlayer` is the only LLM agent
 - New scripts must include all tool outputs listed above
 - `max_tokens` for decisions: >= 100 (120 normal, 200+ for traced)
 - Exceptions in LLM calls must log to stderr, never silently swallowed
@@ -61,7 +62,7 @@ Valid: `equity`, `gto`, `board_texture`, `bet_sizing`, `beliefs`.
 | File | Purpose |
 |------|---------|
 | `experiments/tournament.py` | `SimpleLLMPlayer`, `TournamentRunner`, `run_llm_tournament()` |
-| `run_llm_traced.py` | `TracedLLMPlayer` -- traced mode with full prompt/response display |
+| `run_llm_traced.py` | Traced mode runner -- uses `SimpleLLMPlayer(trace=True)` |
 | `src/tools/gto.py` | GTO advisor -- preflop ranges, 3bet, cbet |
 | `src/tools/board_texture.py` | Board texture -- wetness, draws, connectedness |
 | `src/tools/bet_sizing.py` | Bet sizing by hand strength, board, SPR |
