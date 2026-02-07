@@ -21,6 +21,9 @@ from .subjective_logic import (
 )
 from .primitives import Action, ActionType, Position, Street, HoleCards, Card
 from .game_state import GameState
+from ..logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class ObservationType(Enum):
@@ -708,6 +711,7 @@ class BeliefRevisionEngine:
         self.mapper = ObservationBeliefMapper()
         self.reviser = SLBeliefReviser(trust_discount)
         self.observation_history: list[Observation] = []
+        self._processed_action_count: int = 0  # Track how many actions already processed
 
     def process_observation(self, obs: Observation,
                            belief_state: BeliefState) -> BeliefState:
@@ -723,6 +727,8 @@ class BeliefRevisionEngine:
         Returns:
             Updated belief state
         """
+        logger.debug("Processing observation: %s %s from %s",
+                      obs.obs_type.value, obs.action, obs.player_id)
         self.observation_history.append(obs)
 
         # Get beliefs for this player
@@ -756,11 +762,15 @@ class BeliefRevisionEngine:
     def process_game_state(self, game_state: GameState,
                           belief_state: BeliefState) -> BeliefState:
         """
-        Extract observations from game state and process.
+        Extract observations from game state and process only new actions.
         """
-        # Process recent actions not yet seen
-        for action_record in game_state.action_history:
+        # Only process actions we haven't seen yet
+        all_actions = game_state.action_history
+        new_actions = all_actions[self._processed_action_count:]
+
+        for action_record in new_actions:
             if action_record.player_id == game_state.hero_id:
+                self._processed_action_count += 1
                 continue  # Skip hero's actions
 
             obs = Observation(
@@ -778,8 +788,13 @@ class BeliefRevisionEngine:
                 )
             )
             belief_state = self.process_observation(obs, belief_state)
+            self._processed_action_count += 1
 
         return belief_state
+
+    def reset_action_tracking(self) -> None:
+        """Reset action tracking for a new hand."""
+        self._processed_action_count = 0
 
 
 def create_default_villain_beliefs(player_id: str) -> VillainBeliefs:

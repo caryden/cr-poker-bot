@@ -7,6 +7,11 @@ Provides a simple interface to call Claude API for agent reasoning.
 import os
 from typing import Optional, Callable
 
+from ..config import get_api_key, get_model
+from ..logging_config import get_logger
+
+logger = get_logger(__name__)
+
 try:
     import anthropic
     HAS_ANTHROPIC = True
@@ -39,18 +44,21 @@ def create_claude_client(
             "Install with: pip install anthropic"
         )
 
-    # Get API key from argument or environment
-    key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+    # Get API key: argument > .env file > environment variable
+    key = api_key or get_api_key()
     if not key:
         raise ValueError(
-            "No API key provided. Either pass api_key argument or "
+            "No API key provided. Either pass api_key argument, "
+            "set ANTHROPIC_API_KEY in .env file, or "
             "set ANTHROPIC_API_KEY environment variable."
         )
 
     client = anthropic.Anthropic(api_key=key)
+    logger.info("Claude client created with model=%s", model)
 
     def call_claude(prompt: str) -> str:
         """Call Claude with the given prompt."""
+        logger.debug("LLM request (%d chars)", len(prompt))
         message = client.messages.create(
             model=model,
             max_tokens=1024,
@@ -58,7 +66,9 @@ def create_claude_client(
                 {"role": "user", "content": prompt}
             ]
         )
-        return message.content[0].text
+        response = message.content[0].text
+        logger.debug("LLM response (%d chars)", len(response))
+        return response
 
     return call_claude
 
@@ -101,7 +111,7 @@ def check_api_available() -> dict:
     """
     result = {
         'anthropic_installed': HAS_ANTHROPIC,
-        'api_key_set': bool(os.environ.get("ANTHROPIC_API_KEY")),
+        'api_key_set': bool(get_api_key()),
         'ready': False,
         'message': ''
     }
