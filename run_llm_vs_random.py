@@ -21,11 +21,11 @@ def main():
     # Create 5 random opponents
     players = [
         TournamentPlayer('LLM_Hero', llm_player, starting_stack),
-        TournamentPlayer('Random_1', RandomPlayer('Random_1'), starting_stack),
-        TournamentPlayer('Random_2', RandomPlayer('Random_2'), starting_stack),
-        TournamentPlayer('Random_3', RandomPlayer('Random_3'), starting_stack),
-        TournamentPlayer('Random_4', RandomPlayer('Random_4'), starting_stack),
-        TournamentPlayer('Random_5', RandomPlayer('Random_5'), starting_stack),
+        TournamentPlayer('RANDOM_1', RandomPlayer('RANDOM_1'), starting_stack),
+        TournamentPlayer('RANDOM_2', RandomPlayer('RANDOM_2'), starting_stack),
+        TournamentPlayer('RANDOM_3', RandomPlayer('RANDOM_3'), starting_stack),
+        TournamentPlayer('RANDOM_4', RandomPlayer('RANDOM_4'), starting_stack),
+        TournamentPlayer('RANDOM_5', RandomPlayer('RANDOM_5'), starting_stack),
     ]
 
     runner = TournamentRunner(

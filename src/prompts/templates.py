@@ -4,7 +4,6 @@ Prompt templates for the poker agent.
 Provides structured prompts for different situations including:
 - System prompt with tool descriptions
 - Situation-specific prompts
-- Strategy-conditioned prompts for TRT
 - Belief state formatting
 """
 
@@ -15,7 +14,6 @@ from ..core.primitives import Position, Street
 from ..core.game_state import GameState
 from ..core.beliefs import BeliefState, sort_beliefs_by_knowledge
 from ..agent.tools import ToolRegistry
-from ..agent.trt.strategy import Strategy
 
 
 # ============== System Prompt ==============
@@ -132,27 +130,6 @@ If all checks pass, confirm with: `CONFIRM: ${proposed_action}`
 Otherwise, reconsider with: `RECONSIDER: [reason]`""")
 
 
-# ============== Strategy Templates ==============
-
-STRATEGY_CONDITIONED_TEMPLATE = Template("""## Strategy: ${strategy_name}
-
-${strategy_description}
-
-Apply this strategic lens to the current situation:
-${situation_summary}
-
-Under the **${strategy_name}** strategy:
-1. What is the recommended action?
-2. What are the key reasons?
-3. What are potential pitfalls (contraindications)?
-
-Think through this strategy specifically, then provide:
-- ACTION: [your recommended action]
-- REASONING: [why this fits the strategy]
-- CONTRAINDICATIONS: [reasons NOT to do this]
-- CONFIDENCE: [0.0-1.0]""")
-
-
 # ============== Helper Functions ==============
 
 def format_villains(game_state: GameState, bb: float) -> str:
@@ -241,23 +218,6 @@ class PromptBuilder:
             values['spr'] = f"{game_state.spr:.1f}"
             values['hand_description'] = self._describe_hand(game_state)
             return POSTFLOP_TEMPLATE.substitute(values)
-
-    def build_strategy_prompt(
-        self,
-        game_state: GameState,
-        strategy: Strategy,
-        belief_state: Optional[BeliefState] = None
-    ) -> str:
-        """Build strategy-conditioned prompt for TRT."""
-        situation = self._summarize_situation(game_state)
-
-        values = {
-            'strategy_name': strategy.value.upper(),
-            'strategy_description': strategy.description,
-            'situation_summary': situation,
-        }
-
-        return STRATEGY_CONDITIONED_TEMPLATE.substitute(values)
 
     def build_verification_prompt(
         self,

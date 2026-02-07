@@ -10,8 +10,8 @@ from experiments.tournament import TournamentPlayer, TournamentRunner, SimpleLLM
 from src.game.opponents import CallingStation, TightPassive, LooseAggressive, TagBot
 
 STRATEGY_BOTS = [
-    ("Fish", CallingStation),
-    ("Nit", TightPassive),
+    ("FISH", CallingStation),
+    ("NIT", TightPassive),
     ("LAG", LooseAggressive),
     ("TAG", TagBot),
 ]

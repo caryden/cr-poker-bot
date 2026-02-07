@@ -200,51 +200,7 @@ class TestProcessGameStateDedup:
 
 
 # =============================================================================
-# 4. _parse_params quoted string fix
-# =============================================================================
-
-class TestParseParamsQuotedStrings:
-    """The param parser should handle commas inside quoted strings."""
-
-    def _make_agent(self):
-        """Create a minimal ReActAgent for testing _parse_params."""
-        from src.agent.react import ReActAgent
-        from src.agent.llm_client import create_mock_client
-        mock = create_mock_client()
-        return ReActAgent(llm_call=mock)
-
-    def test_simple_params(self):
-        agent = self._make_agent()
-        result = agent._parse_params("x=1, y=2")
-        assert result["x"] == 1.0
-        assert result["y"] == 2.0
-
-    def test_quoted_string_with_commas(self):
-        """Key fix: commas inside quotes should not split."""
-        agent = self._make_agent()
-        result = agent._parse_params('vs_range="AA,KK,QQ", equity=0.65')
-        assert result["vs_range"] == "AA,KK,QQ"
-        assert result["equity"] == 0.65
-
-    def test_single_quoted_string_with_commas(self):
-        agent = self._make_agent()
-        result = agent._parse_params("range='JJ+,AKs,AKo', num=1000")
-        assert result["range"] == "JJ+,AKs,AKo"
-        assert result["num"] == 1000.0
-
-    def test_empty_params(self):
-        agent = self._make_agent()
-        result = agent._parse_params("")
-        assert result == {}
-
-    def test_string_without_quotes(self):
-        agent = self._make_agent()
-        result = agent._parse_params("situation=open")
-        assert result["situation"] == "open"
-
-
-# =============================================================================
-# 5. Hand narrative tracing
+# 4. Hand narrative tracing
 # =============================================================================
 
 class TestHandNarrative:

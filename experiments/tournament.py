@@ -27,8 +27,6 @@ from src.core.beliefs import (
 )
 from src.game.runner import SimplePokerEngine, HandRunner, Deck
 from src.game.opponents import RandomPlayer, CallingStation, TightPassive, LooseAggressive, TagBot
-from src.agent.react import ReActAgent
-from src.agent.tools import ToolRegistry
 
 
 class PlayerProtocol(Protocol):
@@ -64,21 +62,6 @@ class TournamentResult:
     hand_history: list[dict] = field(default_factory=list)
 
 
-class LLMAgentPlayer:
-    """Wrapper to make ReActAgent compatible with PlayerProtocol."""
-
-    def __init__(self, agent: ReActAgent, player_id: str = 'hero'):
-        self.agent = agent
-        self._player_id = player_id
-
-    @property
-    def player_id(self) -> str:
-        return self._player_id
-
-    def decide(self, game_state: GameState) -> Action:
-        decision = self.agent.decide(game_state)
-        return decision.action
-
 
 SYSTEM_PROMPT = """You are an expert poker AI playing 6-max No-Limit Hold'em.
 
@@ -103,13 +86,24 @@ Respond with ONLY: fold / check / call / bet N / raise N / all-in"""
 
 
 class SimpleLLMPlayer:
-    """LLM player that receives full hand history (PHH) and SL beliefs."""
+    """LLM hero agent. Receives all tool outputs, beliefs, and PHH history.
 
-    def __init__(self, player_id: str = 'LLM_Agent', model: str = 'claude-sonnet-4-5'):
+    Args:
+        excluded_tools: Set of tool names to exclude for ablation studies.
+            Valid: 'equity', 'gto', 'board_texture', 'bet_sizing', 'beliefs'.
+    """
+
+    VALID_ABLATION_TOOLS = {'equity', 'gto', 'board_texture', 'bet_sizing', 'beliefs'}
+
+    def __init__(self, player_id: str = 'LLM_Hero', model: str = 'claude-sonnet-4-5',
+                 excluded_tools: set[str] | None = None):
         import anthropic
         self._player_id = player_id
         self.model = model
         self.client = anthropic.Anthropic()
+        self.excluded_tools = set(excluded_tools or [])
+        if self.excluded_tools - self.VALID_ABLATION_TOOLS:
+            raise ValueError(f"Invalid ablation tools: {self.excluded_tools - self.VALID_ABLATION_TOOLS}")
         # Set externally by the tournament runner each hand
         self.belief_state = None   # BeliefState
         self.hand_log = []         # list of (player_id, position, action, street) for current hand
@@ -140,26 +134,31 @@ class SimpleLLMPlayer:
         num_opponents = max(1, len([p for p in game_state.players.values()
                            if p.status == PlayerStatus.ACTIVE and p.player_id != self._player_id]))
 
+        # Equity (always computed — needed for pot odds even if excluded from prompt)
         eq = calculate_equity(hero_cards, game_state.board, num_opponents=num_opponents, simulations=300)
         pot_odds = game_state.to_call / (game_state.pot.total + game_state.to_call) if game_state.to_call > 0 else 0
 
-        # GTO recommendation
-        gto_rec = should_open(hero_cards, hero.position)
-        if game_state.to_call > 0 and game_state.street == Street.PREFLOP:
-            raiser_pos = None
-            for pid, p in game_state.players.items():
-                if pid != self._player_id and p.status == PlayerStatus.ACTIVE:
-                    raiser_pos = p.position
-                    break
-            if raiser_pos:
-                gto_rec = should_3bet(hero_cards, hero.position, raiser_pos)
+        # GTO recommendation (ablation: skip if 'gto' excluded)
+        gto_rec = None
+        if 'gto' not in self.excluded_tools:
+            gto_rec = should_open(hero_cards, hero.position)
+            if game_state.to_call > 0 and game_state.street == Street.PREFLOP:
+                raiser_pos = None
+                for pid, p in game_state.players.items():
+                    if pid != self._player_id and p.status == PlayerStatus.ACTIVE:
+                        raiser_pos = p.position
+                        break
+                if raiser_pos:
+                    gto_rec = should_3bet(hero_cards, hero.position, raiser_pos)
 
-        # Board texture (postflop only)
+        # Board texture (ablation: skip if 'board_texture' excluded)
         board_texture_str = None
-        if game_state.board and game_state.board.cards:
-            board_texture_str = get_texture_description(game_state.board)
+        if 'board_texture' not in self.excluded_tools:
+            if game_state.board and game_state.board.cards:
+                board_texture_str = get_texture_description(game_state.board)
 
         # Hand strength category from equity
+        hand_cat = None
         if eq.equity >= 0.85:
             hand_cat = HandStrengthCategory.MONSTER
         elif eq.equity >= 0.70:
@@ -173,27 +172,33 @@ class SimpleLLMPlayer:
         else:
             hand_cat = HandStrengthCategory.TRASH
 
-        # Bet sizing suggestion
-        sizing_advisor = BetSizingAdvisor()
-        spr = hero.stack / game_state.pot.total if game_state.pot.total > 0 else 10
+        # Bet sizing suggestion (ablation: skip if 'bet_sizing' excluded)
         sizing_rec = None
-        if game_state.street == Street.PREFLOP:
-            sizing_rec = sizing_advisor.get_preflop_sizing(
-                hero.position, facing_raise=game_state.to_call > 0,
-                raise_amount=game_state.to_call)
-        elif game_state.board and game_state.board.cards:
-            texture = analyze_board(game_state.board)
-            if game_state.street == Street.FLOP:
-                sizing_rec = sizing_advisor.get_flop_sizing(texture, hand_cat, False, spr)
-            elif game_state.street == Street.TURN:
-                sizing_rec = sizing_advisor.get_turn_sizing(texture, hand_cat, False, spr)
-            elif game_state.street == Street.RIVER:
-                sizing_rec = sizing_advisor.get_river_sizing(
-                    texture, hand_cat, game_state.pot.total, hero.stack)
+        if 'bet_sizing' not in self.excluded_tools:
+            sizing_advisor = BetSizingAdvisor()
+            spr = hero.stack / game_state.pot.total if game_state.pot.total > 0 else 10
+            if game_state.street == Street.PREFLOP:
+                sizing_rec = sizing_advisor.get_preflop_sizing(
+                    hero.position, facing_raise=game_state.to_call > 0,
+                    raise_amount=game_state.to_call)
+            elif game_state.board and game_state.board.cards:
+                texture = analyze_board(game_state.board)
+                if game_state.street == Street.FLOP:
+                    sizing_rec = sizing_advisor.get_flop_sizing(texture, hand_cat, False, spr)
+                elif game_state.street == Street.TURN:
+                    sizing_rec = sizing_advisor.get_turn_sizing(texture, hand_cat, False, spr)
+                elif game_state.street == Street.RIVER:
+                    sizing_rec = sizing_advisor.get_river_sizing(
+                        texture, hand_cat, game_state.pot.total, hero.stack)
 
-        prompt = self._build_prompt(game_state, hero, eq.equity, pot_odds,
+        # Ablation: exclude equity/beliefs from prompt if requested
+        equity_for_prompt = None if 'equity' in self.excluded_tools else eq.equity
+        pot_odds_for_prompt = None if 'equity' in self.excluded_tools else pot_odds
+
+        prompt = self._build_prompt(game_state, hero, equity_for_prompt, pot_odds_for_prompt,
                                     gto_rec=gto_rec, board_texture_str=board_texture_str,
-                                    hand_cat=hand_cat, sizing_rec=sizing_rec)
+                                    hand_cat=hand_cat if 'equity' not in self.excluded_tools else None,
+                                    sizing_rec=sizing_rec)
 
         try:
             resp = self.client.messages.create(
@@ -211,7 +216,7 @@ class SimpleLLMPlayer:
         return self._parse_action(response, game_state.to_call, hero.stack)
 
     def _build_prompt(self, game_state: GameState, hero: PlayerState,
-                      equity: float, pot_odds: float, *,
+                      equity: float | None, pot_odds: float | None, *,
                       gto_rec=None, board_texture_str=None,
                       hand_cat=None, sizing_rec=None) -> str:
         """Build prompt with PHH hand history, SL beliefs, and tool analysis."""
@@ -222,7 +227,8 @@ class SimpleLLMPlayer:
         parts.append(f"Hand: {hero.hole_cards} | Board: {board_str}")
         parts.append(f"Street: {game_state.street.value} | Position: {hero.position.value}")
         parts.append(f"Pot: {game_state.pot.total:.0f} | To call: {game_state.to_call:.0f} | Stack: {hero.stack:.0f}")
-        parts.append(f"Equity: {equity:.0%} | Pot odds: {pot_odds:.0%}")
+        if equity is not None:
+            parts.append(f"Equity: {equity:.0%} | Pot odds: {pot_odds:.0%}")
 
         # Villain stacks
         parts.append("\nPlayers:")
@@ -239,7 +245,6 @@ class SimpleLLMPlayer:
                 if street != current_street:
                     current_street = street
                     parts.append(f"  -- {street} --")
-                # PHH-style notation
                 if action.action_type == ActionType.FOLD:
                     parts.append(f"  {pid}@{pos}: f")
                 elif action.action_type in (ActionType.CHECK, ActionType.CALL):
@@ -249,8 +254,8 @@ class SimpleLLMPlayer:
                 elif action.action_type == ActionType.ALL_IN:
                     parts.append(f"  {pid}@{pos}: cbr {action.amount:.0f} (all-in)")
 
-        # SL Belief state
-        if self.belief_state:
+        # SL Belief state (ablation: skip if 'beliefs' excluded)
+        if self.belief_state and 'beliefs' not in self.excluded_tools:
             parts.append("\n" + self.belief_state.to_agent_format())
 
         # Tool analysis
@@ -260,7 +265,7 @@ class SimpleLLMPlayer:
                 parts.append(f"GTO: {gto_rec}")
             if board_texture_str:
                 parts.append(f"Board texture: {board_texture_str}")
-            if hand_cat:
+            if hand_cat and equity is not None:
                 parts.append(f"Hand strength: {hand_cat.name} (equity {equity:.0%})")
             if sizing_rec:
                 parts.append(f"Bet sizing: {sizing_rec}")
@@ -772,12 +777,12 @@ def run_bot_only_tournament(
 
     # Create bot players
     players = [
-        TournamentPlayer('CallingStation1', CallingStation('CallingStation1'), starting_stack),
-        TournamentPlayer('CallingStation2', CallingStation('CallingStation2'), starting_stack),
-        TournamentPlayer('TightPassive', TightPassive('TightPassive'), starting_stack),
-        TournamentPlayer('LooseAggressive', LooseAggressive('LooseAggressive'), starting_stack),
-        TournamentPlayer('TagBot', TagBot('TagBot'), starting_stack),
-        TournamentPlayer('Random', RandomPlayer('Random'), starting_stack),
+        TournamentPlayer('FISH_1', CallingStation('FISH_1'), starting_stack),
+        TournamentPlayer('FISH_2', CallingStation('FISH_2'), starting_stack),
+        TournamentPlayer('NIT', TightPassive('NIT'), starting_stack),
+        TournamentPlayer('LAG', LooseAggressive('LAG'), starting_stack),
+        TournamentPlayer('TAG', TagBot('TAG'), starting_stack),
+        TournamentPlayer('RANDOM', RandomPlayer('RANDOM'), starting_stack),
     ]
 
     runner = TournamentRunner(
@@ -799,34 +804,29 @@ def run_llm_tournament(
     blind_increase_hands: int = 15,
     max_hands: int = 200,
     verbose: bool = True,
-    use_simple_agent: bool = True
+    excluded_tools: set[str] | None = None,
 ) -> TournamentResult:
-    """Run a tournament with LLM agent vs bots."""
+    """Run a tournament with LLM hero agent vs strategy bots.
 
-    if use_simple_agent:
-        # Fast single-call agent (~1.5s per decision)
-        print(f"Initializing SimpleLLM agent ({model})...", flush=True)
-        llm_player = SimpleLLMPlayer('LLM_Agent', model=model)
-    else:
-        # Slow ReAct agent (~12-16s per decision)
-        from src.agent.llm_client import create_claude_client
-        print(f"Initializing ReAct agent ({model})...", flush=True)
-        llm_call = create_claude_client(model=model)
-        tools = ToolRegistry()
-        react_agent = ReActAgent(tool_registry=tools, max_steps=4, llm_call=llm_call)
-        llm_player = LLMAgentPlayer(react_agent, 'LLM_Agent')
+    Args:
+        excluded_tools: Set of tool names to exclude from the LLM prompt
+            for ablation studies. Valid values: 'equity', 'gto',
+            'board_texture', 'bet_sizing', 'beliefs'.
+    """
+    print(f"Initializing LLM hero ({model})...", flush=True)
+    if excluded_tools:
+        print(f"  Ablation: excluding {excluded_tools}", flush=True)
+    llm_player = SimpleLLMPlayer('LLM_Hero', model=model, excluded_tools=excluded_tools)
 
-    # Create bot opponents
     players = [
-        TournamentPlayer('LLM_Agent', llm_player, starting_stack),
-        TournamentPlayer('CallingStation', CallingStation('CallingStation'), starting_stack),
-        TournamentPlayer('TightPassive', TightPassive('TightPassive'), starting_stack),
-        TournamentPlayer('LooseAggressive', LooseAggressive('LooseAggressive'), starting_stack),
-        TournamentPlayer('TagBot', TagBot('TagBot'), starting_stack),
-        TournamentPlayer('Random', RandomPlayer('Random'), starting_stack),
+        TournamentPlayer('LLM_Hero', llm_player, starting_stack),
+        TournamentPlayer('FISH', CallingStation('FISH'), starting_stack),
+        TournamentPlayer('NIT', TightPassive('NIT'), starting_stack),
+        TournamentPlayer('LAG', LooseAggressive('LAG'), starting_stack),
+        TournamentPlayer('TAG', TagBot('TAG'), starting_stack),
+        TournamentPlayer('RANDOM', RandomPlayer('RANDOM'), starting_stack),
     ]
 
-    # Run tournament
     runner = TournamentRunner(
         players=players,
         starting_stack=starting_stack,

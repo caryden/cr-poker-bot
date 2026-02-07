@@ -24,19 +24,14 @@ def create_claude_client(
     model: str = "claude-sonnet-4-5"
 ) -> Callable[[str], str]:
     """
-    Create a Claude API client for the agent.
+    Create a Claude API client function.
 
     Args:
         api_key: Anthropic API key (or set ANTHROPIC_API_KEY env var)
         model: Model to use (default: claude-sonnet-4-5)
-               Latest options: claude-sonnet-4-5, claude-opus-4-6, claude-haiku-4-5
 
     Returns:
         Function that takes prompt and returns response
-
-    Example:
-        llm_call = create_claude_client()
-        agent = ReActAgent(llm_call=llm_call)
     """
     if not HAS_ANTHROPIC:
         raise ImportError(
@@ -44,7 +39,6 @@ def create_claude_client(
             "Install with: pip install anthropic"
         )
 
-    # Get API key: argument > .env file > environment variable
     key = api_key or get_api_key()
     if not key:
         raise ValueError(
@@ -73,35 +67,6 @@ def create_claude_client(
     return call_claude
 
 
-def create_mock_client() -> Callable[[str], str]:
-    """
-    Create a mock LLM client for testing without API.
-
-    Uses simple heuristics - not for real evaluation.
-    """
-    def mock_call(prompt: str) -> str:
-        prompt_lower = prompt.lower()
-
-        # Simulate tool usage
-        if "pot_odds" not in prompt_lower:
-            return "Let me check pot odds.\n\nTOOL: pot_odds()"
-        if "equity" not in prompt_lower:
-            return "Calculating equity.\n\nTOOL: equity_calc()"
-        if "gto" not in prompt_lower:
-            return "Checking GTO.\n\nTOOL: gto_advisor(situation='open')"
-
-        # Simple decision heuristics
-        if "to_call: 0" in prompt_lower or "to call: 0" in prompt_lower:
-            return "No bet to call.\n\nDECISION: check"
-
-        if "strong" in prompt_lower and "hand" in prompt_lower:
-            return "Strong hand, betting for value.\n\nDECISION: bet 0.67"
-
-        return "Calling based on pot odds.\n\nDECISION: call"
-
-    return mock_call
-
-
 def check_api_available() -> dict:
     """
     Check if Claude API is available.
@@ -124,10 +89,8 @@ def check_api_available() -> dict:
         result['message'] = "Set ANTHROPIC_API_KEY environment variable"
         return result
 
-    # Try a minimal API call
     try:
         client = anthropic.Anthropic()
-        # Just verify client creation works
         result['ready'] = True
         result['message'] = "Claude API ready"
     except Exception as e:

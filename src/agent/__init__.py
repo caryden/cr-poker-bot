@@ -1,7 +1,7 @@
 """
 Agent module for poker bot.
 
-Provides the ReAct agent, tool interface, and TRT integration.
+Provides tool interfaces and LLM client utilities.
 """
 
 from .tools import (
@@ -10,16 +10,8 @@ from .tools import (
     GTOAdvisorTool, BeliefQueryTool
 )
 
-from .react import (
-    AgentPhase, ReasoningStep, AgentDecision, ReActAgent
-)
-
-from .trt.strategy import (
-    Strategy, StrategyEvaluation, RolloutResult, TRTDecision, TRTEngine
-)
-
 from .llm_client import (
-    create_claude_client, create_mock_client, check_api_available
+    create_claude_client, check_api_available
 )
 
 __all__ = [
@@ -27,10 +19,6 @@ __all__ = [
     'ToolName', 'ToolCall', 'ToolResult', 'Tool', 'ToolContext', 'ToolRegistry',
     'HandEvalTool', 'EquityCalcTool', 'PotOddsTool', 'EVCalcTool',
     'GTOAdvisorTool', 'BeliefQueryTool',
-    # ReAct
-    'AgentPhase', 'ReasoningStep', 'AgentDecision', 'ReActAgent',
-    # TRT
-    'Strategy', 'StrategyEvaluation', 'RolloutResult', 'TRTDecision', 'TRTEngine',
     # LLM Client
-    'create_claude_client', 'create_mock_client', 'check_api_available',
+    'create_claude_client', 'check_api_available',
 ]

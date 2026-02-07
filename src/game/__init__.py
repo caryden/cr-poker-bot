@@ -7,7 +7,7 @@ Provides game runners, opponents, and evaluation tools.
 from .runner import (
     HandResult, SessionStats,
     Deck, SimplePokerEngine,
-    AgentPlayer, HandRunner, SessionRunner
+    HandRunner, SessionRunner
 )
 
 from .opponents import (
@@ -19,7 +19,7 @@ __all__ = [
     # Runner
     'HandResult', 'SessionStats',
     'Deck', 'SimplePokerEngine',
-    'AgentPlayer', 'HandRunner', 'SessionRunner',
+    'HandRunner', 'SessionRunner',
     # Opponents
     'RandomPlayer', 'CallingStation', 'TightPassive',
     'LooseAggressive', 'TagBot', 'create_opponent',

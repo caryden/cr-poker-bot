@@ -1,60 +1,77 @@
 # CLAUDE.md - Project Context for AI Agents
 
 ## Project Overview
-This is a poker bot that uses Claude LLM as its decision-making engine for 6-max No-Limit Hold'em.
-The core value proposition is that the LLM receives **rich contextual information** from multiple
-analysis tools and a belief system to make informed poker decisions.
+Poker bot using Claude LLM for 6-max No-Limit Hold'em decisions.
+The LLM receives rich context from analysis tools and a belief system.
 
-## Architecture: The Tool Pipeline is Sacred
+## The One Agent: SimpleLLMPlayer
 
-The LLM agent's decision quality depends entirely on the information it receives. The following
-tools and data sources MUST be included in every LLM prompt that makes a poker decision:
+`SimpleLLMPlayer` in `experiments/tournament.py` is the **only** LLM agent.
+`_build_prompt()` is the single source of truth for prompt construction.
 
-### Required in Every Decision Prompt
-1. **Equity** - Monte Carlo hand equity calculation (`src/tools/equity.py`)
-2. **Pot odds** - Mathematical pot odds for calling decisions
-3. **GTO recommendation** - Whether to open/3bet/fold per position (`src/tools/gto.py`)
-4. **Board texture** - Dry/wet/connected/flush draws analysis (`src/tools/board_texture.py`)
-5. **Bet sizing** - Recommended sizing by hand strength and board (`src/tools/bet_sizing.py`)
-6. **SL belief state** - Subjective Logic opinions about opponent types (`src/core/beliefs.py`)
-7. **PHH hand history** - Actions taken this hand in PHH notation
-8. **System prompt** - The SYSTEM_PROMPT from `experiments/tournament.py` explaining PHH/SL notation
+`TracedLLMPlayer` in `run_llm_traced.py` extends it to print the full
+prompt/response trace. It must call `_build_prompt()`.
 
-### Critical Rules
+## Required Tool Outputs in Every Decision Prompt
+
+1. **Equity** -- Monte Carlo calculation (`src/tools/equity.py`)
+2. **Pot odds** -- calculated from game state
+3. **GTO recommendation** -- open/3bet ranges (`src/tools/gto.py`)
+4. **Board texture** -- dry/wet/draws (`src/tools/board_texture.py`)
+5. **Bet sizing** -- by hand strength + board (`src/tools/bet_sizing.py`)
+6. **SL beliefs** -- opponent type opinions (`src/core/beliefs.py`)
+7. **PHH hand history** -- actions this hand
+8. **System prompt** -- `SYSTEM_PROMPT` in `experiments/tournament.py`
+
+## Critical Rules
 
 **NEVER strip down, simplify, or bypass the prompt pipeline.**
-- If a subclass overrides `decide()`, it MUST call `_build_prompt()` or include equivalent data
-- If a new script creates LLM prompts, it MUST include all tool outputs listed above
-- `max_tokens` for decision prompts must be >= 100 (120 for fast play, 200+ for traced/debug)
-- Exceptions in LLM calls must ALWAYS be logged to stderr, never silently swallowed
+- Subclasses must call `_build_prompt()`, not build their own prompt
+- New scripts must include all tool outputs listed above
+- `max_tokens` for decisions: >= 100 (120 normal, 200+ for traced)
+- Exceptions in LLM calls must log to stderr, never silently swallowed
 
 **NEVER silently degrade behavior.**
-- If falling back to a heuristic (mock LLM, forced decision, exception handler), log a warning
-- If a tool call fails, log it - don't silently skip the data
-- If using a mock/test client instead of real LLM, print a warning
+- Log warnings when falling back to heuristics
+- Log when tool calls fail
+- Log when using mock/test clients
+
+## Strategy Bots (canonical names)
+
+| Name     | Class              | Style                       |
+|----------|--------------------|-----------------------------|
+| `FISH`   | `CallingStation`   | Calls everything            |
+| `NIT`    | `TightPassive`     | Only premiums               |
+| `LAG`    | `LooseAggressive`  | Plays wide, bets often      |
+| `TAG`    | `TagBot`           | Solid positional poker      |
+| `RANDOM` | `RandomPlayer`     | Uniform random baseline     |
+
+All defined in `src/game/opponents.py`.
+
+## Ablation Support
+
+`SimpleLLMPlayer` accepts `excluded_tools` parameter:
+```python
+player = SimpleLLMPlayer('hero', excluded_tools={'gto', 'beliefs'})
+```
+Valid: `equity`, `gto`, `board_texture`, `bet_sizing`, `beliefs`.
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `experiments/tournament.py` | `SimpleLLMPlayer` - the core LLM player. `_build_prompt()` constructs the full prompt with all tools. |
-| `run_llm_traced.py` | `TracedLLMPlayer` - extends SimpleLLMPlayer with full trace printing. Must call parent's `_build_prompt()`. |
-| `src/agent/react.py` | `ReActAgent` - multi-step reasoning agent (slower, uses tool calls). |
-| `src/tools/gto.py` | GTO advisor - preflop ranges, 3bet/4bet ranges, cbet recommendations |
-| `src/tools/board_texture.py` | Board texture analysis - wetness, draws, connectedness |
-| `src/tools/bet_sizing.py` | Bet sizing heuristics by hand strength, board, and SPR |
+| `experiments/tournament.py` | `SimpleLLMPlayer`, `TournamentRunner`, `run_llm_tournament()` |
+| `run_llm_traced.py` | `TracedLLMPlayer` -- traced mode with full prompt/response display |
+| `src/tools/gto.py` | GTO advisor -- preflop ranges, 3bet, cbet |
+| `src/tools/board_texture.py` | Board texture -- wetness, draws, connectedness |
+| `src/tools/bet_sizing.py` | Bet sizing by hand strength, board, SPR |
 | `src/tools/equity.py` | Monte Carlo equity calculator |
-| `src/core/beliefs.py` | Subjective Logic belief system for opponent modeling |
+| `src/core/beliefs.py` | Subjective Logic belief system |
+| `src/game/opponents.py` | Strategy bots (FISH, NIT, LAG, TAG, RANDOM) |
 
 ## Testing
 ```bash
-pytest tests/ -v          # All unit tests (no API key needed)
-python run_llm_traced.py  # Live LLM game with full trace (needs ANTHROPIC_API_KEY)
+pytest tests/ -v                                # Unit tests (no API key)
+python run_llm_traced.py                        # Live LLM game with trace
+python run_llm_traced.py --exclude gto          # Ablation run
 ```
-
-## Common Mistakes to Avoid
-- Creating a new LLM player class that builds its own minimal prompt instead of using `_build_prompt()`
-- Setting `max_tokens` too low (< 100) which truncates the LLM's ability to reason
-- Catching exceptions with bare `except:` without logging
-- Adding fallback behavior without logging that the fallback was triggered
-- Removing tool outputs "for simplicity" or "to speed things up"

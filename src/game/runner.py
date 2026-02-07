@@ -4,7 +4,6 @@ Game runner that integrates all components for playing poker hands.
 Provides:
 - HandRunner: Plays a single hand with the agent
 - SessionRunner: Plays multiple hands and tracks results
-- Integration with memory, beliefs, and the ReAct agent
 """
 
 from __future__ import annotations
@@ -20,8 +19,6 @@ from ..core import (
 )
 from ..core.memory import OpponentMemory, TableMemory
 from ..core.persistence import PersistentMemoryManager
-from ..agent.react import ReActAgent, AgentDecision
-from ..agent.trt.strategy import TRTEngine
 from ..logging_config import get_logger
 
 # Lazy import to avoid circular dependency: evaluation.__init__ -> evaluation.runner -> game.runner
@@ -308,23 +305,6 @@ class SimplePokerEngine:
         return all(p.bet_this_street == current_bet for p in active_players)
 
 
-class AgentPlayer:
-    """Wrapper to make ReActAgent compatible with PlayerProtocol."""
-
-    def __init__(self, agent: ReActAgent, player_id: str = "hero"):
-        self.agent = agent
-        self._player_id = player_id
-
-    @property
-    def player_id(self) -> str:
-        return self._player_id
-
-    def decide(self, game_state: GameState) -> Action:
-        """Get decision from agent."""
-        decision = self.agent.decide(game_state)
-        return decision.action
-
-
 class HandRunner:
     """
     Runs a single poker hand with the agent.
@@ -398,24 +378,9 @@ class HandRunner:
                 if narrative:
                     hero_narrative = narrative.begin_hero_decision(game)
 
-                if isinstance(self.hero, AgentPlayer) and hero_narrative:
-                    # Full agent with reasoning - capture the decision trace
-                    decision = self.hero.agent.decide(game)
-                    action = decision.action
-                    # Populate narrative from agent steps
-                    for step in decision.steps:
-                        if step.thought:
-                            hero_narrative.add_thought(step.thought)
-                        if step.tool_call and step.tool_result:
-                            hero_narrative.add_tool_call(
-                                str(step.tool_call),
-                                step.tool_result.result[:120] if step.tool_result.result else "ok"
-                            )
-                    hero_narrative.set_decision(action, decision.confidence, decision.verification_passed)
-                else:
-                    action = self.hero.decide(game)
-                    if hero_narrative:
-                        hero_narrative.set_decision(action, 0.0, False)
+                action = self.hero.decide(game)
+                if hero_narrative:
+                    hero_narrative.set_decision(action, 0.0, False)
 
                 if narrative:
                     narrative.end_hero_decision()
