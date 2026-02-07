@@ -23,6 +23,84 @@ from typing import Optional
 import math
 
 
+# ============== Jøsang Verbal Mapping ==============
+# Maps SL opinions to natural language using "words of estimative probability"
+# with qualitative confidence. Based on the opinion triangle grid in
+# Jøsang's BV.html visualization (textvisualiser.js / optriangle.js).
+#
+# Likelihood is derived from projected probability E = b + a*u,
+# adjusted by base rate (the grid skews with base rate in Jøsang's triangle).
+# Confidence is derived from uncertainty u.
+
+# For binomial opinions, l_val is the projected probability on the
+# base-rate-adjusted scale. Jøsang's triangle maps the opinion point's
+# horizontal projection to likelihood, with the grid lines shifted by
+# base rate. The projected probability E already encodes this.
+
+LIKELIHOOD_LABELS = [
+    (0.02, "absolutely not"),
+    (1/7,  "very unlikely"),
+    (2/7,  "unlikely"),
+    (3/7,  "somewhat unlikely"),
+    (4/7,  "chances about even"),
+    (5/7,  "somewhat likely"),
+    (6/7,  "likely"),
+    (1.0,  "very likely"),
+]
+LIKELIHOOD_MAX = "absolutely"
+
+CONFIDENCE_LABELS = [
+    (0.05, "total confidence"),
+    (0.17, "high confidence"),
+    (0.50, "some confidence"),
+    (0.99, "low confidence"),
+]
+CONFIDENCE_MAX = "no confidence"
+
+
+def verbal_likelihood(projected_prob: float) -> str:
+    """Map projected probability E to a verbal likelihood label.
+
+    Uses strict < to match Jøsang's triangle grid (optriangle.js).
+    """
+    for threshold, label in LIKELIHOOD_LABELS:
+        if projected_prob < threshold:
+            return label
+    return LIKELIHOOD_MAX
+
+
+def verbal_confidence(uncertainty: float) -> str:
+    """Map uncertainty u to a verbal confidence label."""
+    for threshold, label in CONFIDENCE_LABELS:
+        if uncertainty <= threshold:
+            return label
+    return CONFIDENCE_MAX
+
+
+def verbal_opinion(opinion: 'Opinion') -> str:
+    """Map a binomial opinion to Jøsang verbal format.
+
+    Returns e.g. 'likely, with some confidence' or
+    'very unlikely, with high confidence'.
+    """
+    likelihood = verbal_likelihood(opinion.projected_probability)
+    confidence = verbal_confidence(opinion.uncertainty)
+    return f"{likelihood}, with {confidence}"
+
+
+def verbal_multinomial(multi: 'MultinomialOpinion') -> str:
+    """Map a multinomial opinion to verbal format.
+
+    Shows categories sorted by projected probability (descending),
+    each with its percentage and overall confidence qualifier.
+    """
+    probs = multi.all_projected_probabilities()
+    sorted_cats = sorted(probs.items(), key=lambda x: -x[1])
+    confidence = verbal_confidence(multi.uncertainty)
+    parts = [f"{cat} {prob:.0%}" for cat, prob in sorted_cats]
+    return f"{', '.join(parts)} ({confidence})"
+
+
 @dataclass
 class Opinion:
     """
@@ -737,14 +815,13 @@ class Belief:
         return self.opinion.knowledge
 
     def to_agent_format(self) -> str:
-        """
-        Format belief for agent consumption.
+        """Format belief for agent consumption using Jøsang verbal mapping.
 
-        Format: "label (b=X.XX, d=X.XX, u=X.XX) E=X.XX"
-        where E = b + α*u is the projected expectation.
+        Example: 'is aggressive: likely, with some confidence (E=0.72)'
         """
         exp = self.opinion.projected_probability
-        return f"{self.label} {self.opinion.to_tuple_str()} E={exp:.2f}"
+        verbal = verbal_opinion(self.opinion)
+        return f"{self.label}: {verbal} (E={exp:.2f})"
 
 
 def sort_beliefs_by_knowledge(beliefs: list[Belief],

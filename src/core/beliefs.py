@@ -627,17 +627,16 @@ class VillainBeliefs:
         return sort_beliefs_by_knowledge(self.all_beliefs())
 
     def to_agent_format(self) -> str:
-        """Format beliefs for agent consumption with full (b,d,u) and E=b+αu."""
+        """Format beliefs using Jøsang verbal mapping."""
+        from src.core.subjective_logic import verbal_multinomial
         lines = [f"Beliefs about {self.player_id}:"]
 
-        # Player type (multinomial) - show most likely + full distribution with expectations
-        best_type, prob = self.player_type.most_likely_category()
-        lines.append(f"  Player type: most likely {best_type} (E={prob:.2f})")
-        lines.append(f"    Full: {self.player_type.to_tuple_str()}")
+        # Player type (multinomial) - verbal with percentages and confidence
+        lines.append(f"  Type: {verbal_multinomial(self.player_type)}")
 
-        # Tendencies (binomial) - sorted by knowledge, show (b,d,u) and E
+        # Tendencies (binomial) - verbal likelihood + confidence
         if self.beliefs:
-            lines.append("  Tendencies (b,d,u | E=b+αu):")
+            lines.append("  Tendencies:")
             for belief in self.sorted_by_knowledge():
                 lines.append(f"    {belief.to_agent_format()}")
 
@@ -675,9 +674,7 @@ class BeliefState:
 
     def to_agent_format(self) -> str:
         """Format complete belief state for agent consumption."""
-        lines = ["=== BELIEF STATE ==="]
-        lines.append("(Sorted by knowledge: b+d, higher = more informative)")
-        lines.append("(High d = strong evidence AGAINST, narrows search space)")
+        lines = ["=== OPPONENT READS ==="]
         lines.append("")
 
         # Villain beliefs

@@ -106,7 +106,7 @@ class TestVillainBeliefs:
         formatted = beliefs.to_agent_format()
 
         assert "villain1" in formatted
-        assert "Player type" in formatted
+        assert "Type:" in formatted
         assert "LAG" in formatted
         assert "bluffs often" in formatted
 
@@ -164,7 +164,7 @@ class TestBeliefState:
 
         formatted = state.to_agent_format()
 
-        assert "BELIEF STATE" in formatted
+        assert "OPPONENT READS" in formatted
         assert "villain1" in formatted
 
     def test_default_beliefs_include_tendencies(self):

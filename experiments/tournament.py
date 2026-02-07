@@ -74,11 +74,13 @@ You will receive the current hand state in PHH-style notation plus opponent beli
 - "pN cc" = player N checks or calls
 - "pN cbr AMT" = player N bets or raises TO amount AMT
 
-## Belief State (Subjective Logic)
-Opponent beliefs use SL opinions: (b=belief, d=disbelief, u=uncertainty).
-- E = b + base_rate * u is the projected expectation (probability estimate).
+## Opponent Reads
+You receive belief estimates about each opponent derived from observed actions.
 - Player types: TAG (tight-aggressive), LAG (loose-aggressive), NIT (tight-passive), Fish (calling station), Maniac.
-- High u = we don't know much yet. High b for a type = strong evidence they ARE that type.
+- Tendencies: aggression, bluff frequency, positional awareness.
+- Each estimate has a verbal likelihood and confidence level.
+  "No confidence" = prior only (no observations yet). "High/total confidence" = strong evidence.
+- E is the projected probability estimate (higher = more likely).
 
 ## Your Task
 Given the hand history, beliefs, and tool analysis, explain your reasoning in 2-3 sentences

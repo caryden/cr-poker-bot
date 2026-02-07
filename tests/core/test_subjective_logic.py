@@ -4,7 +4,8 @@ import pytest
 import math
 from src.core.subjective_logic import (
     Opinion, Belief, sort_beliefs_by_knowledge, format_beliefs_for_agent,
-    MultinomialOpinion, MultinomialBelief
+    MultinomialOpinion, MultinomialBelief,
+    verbal_likelihood, verbal_confidence, verbal_opinion, verbal_multinomial,
 )
 
 
@@ -233,7 +234,9 @@ class TestBelief:
 
         formatted = belief.to_agent_format()
         assert "is aggressive" in formatted
-        assert "(b=0.50, d=0.30, u=0.20)" in formatted
+        assert "somewhat likely" in formatted
+        assert "some confidence" in formatted
+        assert "E=0.60" in formatted
 
 
 class TestBeliefSorting:
@@ -545,3 +548,62 @@ class TestMultinomialBelief:
         belief = MultinomialBelief("test", op)
 
         assert belief.knowledge == op.knowledge
+
+
+class TestVerbalMapping:
+    """Tests for Jøsang verbal opinion mapping."""
+
+    def test_likelihood_extremes(self):
+        assert verbal_likelihood(0.0) == "absolutely not"
+        assert verbal_likelihood(1.0) == "absolutely"
+
+    def test_likelihood_midrange(self):
+        assert verbal_likelihood(0.5) == "chances about even"
+
+    def test_likelihood_likely(self):
+        assert verbal_likelihood(0.80) == "likely"
+
+    def test_likelihood_unlikely(self):
+        assert verbal_likelihood(0.20) == "unlikely"
+
+    def test_confidence_from_uncertainty(self):
+        assert verbal_confidence(0.0) == "total confidence"
+        assert verbal_confidence(0.03) == "total confidence"
+        assert verbal_confidence(0.10) == "high confidence"
+        assert verbal_confidence(0.30) == "some confidence"
+        assert verbal_confidence(0.70) == "low confidence"
+        assert verbal_confidence(1.0) == "no confidence"
+
+    def test_verbal_opinion_vacuous(self):
+        # Vacuous opinion — prior only
+        op = Opinion.vacuous(base_rate=0.4)
+        result = verbal_opinion(op)
+        assert "no confidence" in result
+
+    def test_verbal_opinion_strong_belief(self):
+        op = Opinion(0.8, 0.1, 0.1, 0.5)
+        result = verbal_opinion(op)
+        assert "likely" in result
+        assert "high confidence" in result
+
+    def test_verbal_opinion_strong_disbelief(self):
+        op = Opinion(0.05, 0.85, 0.1, 0.5)
+        result = verbal_opinion(op)
+        assert "unlikely" in result.lower()
+        assert "high confidence" in result
+
+    def test_verbal_multinomial_format(self):
+        cats = ["TAG", "LAG", "Fish"]
+        rates = {"TAG": 0.3, "LAG": 0.3, "Fish": 0.4}
+        op = MultinomialOpinion.vacuous(cats, rates)
+        result = verbal_multinomial(op)
+        assert "Fish 40%" in result
+        assert "no confidence" in result
+
+    def test_verbal_multinomial_with_evidence(self):
+        cats = ["TAG", "LAG", "Fish"]
+        rates = {"TAG": 0.3, "LAG": 0.3, "Fish": 0.4}
+        op = MultinomialOpinion.from_observation("Fish", cats, 0.3, rates)
+        result = verbal_multinomial(op)
+        # Fish should be first (highest probability)
+        assert result.startswith("Fish")
