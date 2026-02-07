@@ -39,7 +39,7 @@ def get_llm_decision(game, hero_cards):
     board_str = str(game.board) if game.board and game.board.cards else 'none'
     prompt = f'Poker. ONLY: fold/check/call/bet N/raise N/all-in\nBoard: {board_str}, Hand: {hero_cards}\nPot: {game.pot.total:.0f}, To call: {game.to_call:.0f}, Stack: {game.hero.stack:.0f}, Equity: {eq.equity:.0%}'
     start = time.time()
-    resp = client.messages.create(model='claude-sonnet-4-5', max_tokens=15, messages=[{'role': 'user', 'content': prompt}])
+    resp = client.messages.create(model='claude-sonnet-4-5', max_tokens=60, messages=[{'role': 'user', 'content': prompt}])
     return resp.content[0].text.strip(), time.time() - start
 
 def run_hand(hero_stack, villain_stack, sb, bb):

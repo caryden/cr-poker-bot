@@ -107,6 +107,9 @@ class ReActAgent:
         """
         self.tools = tool_registry or ToolRegistry()
         self.max_steps = max_steps
+        if llm_call is None:
+            import sys
+            print("[ReActAgent] WARNING: No LLM client provided, using mock", file=sys.stderr)
         self.llm_call = llm_call or self._mock_llm_call
         self.steps: list[ReasoningStep] = []
 
@@ -297,6 +300,8 @@ class ReActAgent:
                 tool_result=result
             )
         except Exception as e:
+            import sys
+            print(f"[ReActAgent] Tool parse error: {e}", file=sys.stderr)
             return ReasoningStep(
                 phase=AgentPhase.REASON,
                 thought=f"{thought}\n[Tool parse error: {e}]"
@@ -451,6 +456,8 @@ class ReActAgent:
         context: ToolContext
     ) -> AgentDecision:
         """Force a decision when max steps reached."""
+        import sys
+        print(f"[ReActAgent] WARNING: Max steps ({self.max_steps}) reached, forcing fallback decision", file=sys.stderr)
         # Default to check/call if cheap, fold otherwise
         if game_state.to_call == 0:
             action = Action.check()

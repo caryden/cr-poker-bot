@@ -120,6 +120,9 @@ class SimpleLLMPlayer:
 
     def decide(self, game_state: GameState) -> Action:
         from src.tools.equity import calculate_equity
+        from src.tools.gto import should_open, should_3bet
+        from src.tools.board_texture import analyze_board, get_texture_description
+        from src.tools.bet_sizing import BetSizingAdvisor, HandStrengthCategory
 
         hero = game_state.players.get(self._player_id)
         if not hero:
@@ -140,24 +143,78 @@ class SimpleLLMPlayer:
         eq = calculate_equity(hero_cards, game_state.board, num_opponents=num_opponents, simulations=300)
         pot_odds = game_state.to_call / (game_state.pot.total + game_state.to_call) if game_state.to_call > 0 else 0
 
-        prompt = self._build_prompt(game_state, hero, eq.equity, pot_odds)
+        # GTO recommendation
+        gto_rec = should_open(hero_cards, hero.position)
+        if game_state.to_call > 0 and game_state.street == Street.PREFLOP:
+            raiser_pos = None
+            for pid, p in game_state.players.items():
+                if pid != self._player_id and p.status == PlayerStatus.ACTIVE:
+                    raiser_pos = p.position
+                    break
+            if raiser_pos:
+                gto_rec = should_3bet(hero_cards, hero.position, raiser_pos)
+
+        # Board texture (postflop only)
+        board_texture_str = None
+        if game_state.board and game_state.board.cards:
+            board_texture_str = get_texture_description(game_state.board)
+
+        # Hand strength category from equity
+        if eq.equity >= 0.85:
+            hand_cat = HandStrengthCategory.MONSTER
+        elif eq.equity >= 0.70:
+            hand_cat = HandStrengthCategory.VERY_STRONG
+        elif eq.equity >= 0.55:
+            hand_cat = HandStrengthCategory.STRONG
+        elif eq.equity >= 0.40:
+            hand_cat = HandStrengthCategory.MEDIUM
+        elif eq.equity >= 0.25:
+            hand_cat = HandStrengthCategory.MARGINAL
+        else:
+            hand_cat = HandStrengthCategory.TRASH
+
+        # Bet sizing suggestion
+        sizing_advisor = BetSizingAdvisor()
+        spr = hero.stack / game_state.pot.total if game_state.pot.total > 0 else 10
+        sizing_rec = None
+        if game_state.street == Street.PREFLOP:
+            sizing_rec = sizing_advisor.get_preflop_sizing(
+                hero.position, facing_raise=game_state.to_call > 0,
+                raise_amount=game_state.to_call)
+        elif game_state.board and game_state.board.cards:
+            texture = analyze_board(game_state.board)
+            if game_state.street == Street.FLOP:
+                sizing_rec = sizing_advisor.get_flop_sizing(texture, hand_cat, False, spr)
+            elif game_state.street == Street.TURN:
+                sizing_rec = sizing_advisor.get_turn_sizing(texture, hand_cat, False, spr)
+            elif game_state.street == Street.RIVER:
+                sizing_rec = sizing_advisor.get_river_sizing(
+                    texture, hand_cat, game_state.pot.total, hero.stack)
+
+        prompt = self._build_prompt(game_state, hero, eq.equity, pot_odds,
+                                    gto_rec=gto_rec, board_texture_str=board_texture_str,
+                                    hand_cat=hand_cat, sizing_rec=sizing_rec)
 
         try:
             resp = self.client.messages.create(
                 model=self.model,
-                max_tokens=30,
+                max_tokens=120,
                 system=SYSTEM_PROMPT,
                 messages=[{'role': 'user', 'content': prompt}]
             )
             response = resp.content[0].text.strip().lower()
-        except Exception:
+        except Exception as e:
+            import sys
+            print(f"[SimpleLLMPlayer] LLM error: {e}", file=sys.stderr)
             return Action.check() if game_state.to_call == 0 else Action.fold()
 
         return self._parse_action(response, game_state.to_call, hero.stack)
 
     def _build_prompt(self, game_state: GameState, hero: PlayerState,
-                      equity: float, pot_odds: float) -> str:
-        """Build prompt with PHH hand history and SL beliefs."""
+                      equity: float, pot_odds: float, *,
+                      gto_rec=None, board_texture_str=None,
+                      hand_cat=None, sizing_rec=None) -> str:
+        """Build prompt with PHH hand history, SL beliefs, and tool analysis."""
         parts = []
 
         # Table info
@@ -195,6 +252,18 @@ class SimpleLLMPlayer:
         # SL Belief state
         if self.belief_state:
             parts.append("\n" + self.belief_state.to_agent_format())
+
+        # Tool analysis
+        if gto_rec or board_texture_str or hand_cat or sizing_rec:
+            parts.append("\n## Tool Analysis")
+            if gto_rec:
+                parts.append(f"GTO: {gto_rec}")
+            if board_texture_str:
+                parts.append(f"Board texture: {board_texture_str}")
+            if hand_cat:
+                parts.append(f"Hand strength: {hand_cat.name} (equity {equity:.0%})")
+            if sizing_rec:
+                parts.append(f"Bet sizing: {sizing_rec}")
 
         parts.append("\nYour action:")
         return "\n".join(parts)
